@@ -1,0 +1,28 @@
+project:
+  name: ""
+  vision: ""
+  success_criteria: []
+
+constraints:
+  hard:
+    time:
+      deadline: ""
+      milestones: []
+    budget:
+      max_cost: 0
+      resources: []
+    compliance: []
+  
+  soft:
+    tech_stack:
+      prefer: []
+      avoid: []
+    quality:
+      test_coverage: ""
+      code_review: true
+      doc_required: true
+
+risks: []
+
+decisions: []
+checkpoints: []
