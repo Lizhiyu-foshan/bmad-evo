@@ -6,18 +6,28 @@ Provides:
 - Intercept phase transitions and trigger audit
 - Block progression if audit fails
 - Coordinate with retry mechanism
+
+Design Principles:
+- Single Responsibility: Gateway manages state, doesn't perform audits
+- Dependency Injection: Accept audit results, don't create auditors
+- Fault Tolerance: Graceful handling of corrupted state files
 """
 
 import json
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, Union
 from enum import Enum
+from datetime import datetime, timezone
+import logging
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
 from constraint_checker import AuditResult
-from audit_report import AuditReportGenerator
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 class PhaseStatus(Enum):
@@ -38,13 +48,27 @@ class PhaseGateway:
     2. Audit pass (>=85, no HIGH) required to proceed
     3. Retry logic with model fallback
     4. User decision when all retries exhausted
+    
+    Configuration:
+    - MAX_RETRIES: Maximum retry attempts before user decision (default: 3)
+    - PASS_THRESHOLD: Minimum score to pass audit (default: 85)
     """
     
-    def __init__(self, project_path: str):
+    # Configuration constants (can be overridden in config file)
+    MAX_RETRIES = 3
+    PASS_THRESHOLD = 85
+    
+    def __init__(self, project_path: str, config: Optional[Dict[str, Any]] = None):
         self.project_path = Path(project_path)
         self.bmad_dir = self.project_path / ".bmad"
         self.state_file = self.bmad_dir / "phase-state.json"
         self.checkpoint_dir = self.bmad_dir / "checkpoints"
+        self.config_file = self.bmad_dir / "gateway-config.json"
+        
+        # Load configuration
+        self.config = config or self._load_config()
+        self.MAX_RETRIES = self.config.get('max_retries', 3)
+        self.PASS_THRESHOLD = self.config.get('pass_threshold', 85)
         
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
@@ -61,17 +85,56 @@ class PhaseGateway:
         
         self._load_state()
     
+    def _load_config(self) -> Dict[str, Any]:
+        """Load gateway configuration"""
+        if self.config_file.exists():
+            try:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Failed to load config: {e}. Using defaults.")
+        return {}
+    
     def _load_state(self):
-        """Load phase state from disk"""
+        """Load phase state from disk with error recovery"""
         if self.state_file.exists():
-            with open(self.state_file, 'r', encoding='utf-8') as f:
-                self.state = json.load(f)
+            try:
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    self.state = json.load(f)
+                    # Validate state structure
+                    self._validate_state()
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error(f"Corrupted state file: {e}. Creating backup and resetting.")
+                # Backup corrupted state
+                backup_path = self.state_file.with_suffix('.json.corrupt')
+                self.state_file.rename(backup_path)
+                self.state = {
+                    "current_phase": None,
+                    "phase_states": {},
+                    "audit_history": []
+                }
+                self._save_state()
+            except Exception as e:
+                logger.error(f"Unexpected error loading state: {e}")
+                self.state = {
+                    "current_phase": None,
+                    "phase_states": {},
+                    "audit_history": []
+                }
         else:
             self.state = {
                 "current_phase": None,
                 "phase_states": {},
                 "audit_history": []
             }
+    
+    def _validate_state(self):
+        """Validate state structure and fix if needed"""
+        required_keys = ["current_phase", "phase_states", "audit_history"]
+        for key in required_keys:
+            if key not in self.state:
+                self.state[key] = {} if key == "phase_states" else []
+                logger.warning(f"Missing state key '{key}', initialized to default")
     
     def _save_state(self):
         """Save phase state to disk"""
@@ -102,47 +165,55 @@ class PhaseGateway:
         print(f"✅ Phase '{phase}' started")
         return True
     
-    def complete_phase(self, phase: str, output: str, auditor) -> Dict[str, Any]:
+    def complete_phase(
+        self,
+        phase: str,
+        audit_result: AuditResult,
+        attempt: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
-        Complete phase and trigger audit
+        Complete phase with provided audit result
         
         Args:
             phase: Current phase name
-            output: Phase output (code, document, etc.)
-            auditor: ConstraintAuditor instance
+            audit_result: Result from ConstraintAuditor (injected, not created here)
+            attempt: Current attempt number (optional, defaults to last + 1)
             
         Returns:
             Result dict with:
             - action: "proceed", "retry", "block", "abort"
             - result: AuditResult
             - message: User-facing message
+            
+        Design Note:
+        - Gateway doesn't perform audits, only manages state transitions
+        - AuditResult is injected from external auditor
         """
         phase_state = self.state["phase_states"].get(phase, {})
-        attempt = phase_state.get("attempts", 0) + 1
+        current_attempt = attempt or (phase_state.get("attempts", 0) + 1)
         
-        print(f"\n🔒 Phase Gateway: Completing '{phase}' (attempt {attempt})")
-        
-        # Run audit
-        audit_result = auditor.audit(output, phase, attempt)
+        logger.info(f"Phase Gateway: Completing '{phase}' (attempt {current_attempt}/{self.MAX_RETRIES})")
         
         # Update state
-        phase_state["attempts"] = attempt
+        phase_state["attempts"] = current_attempt
         phase_state["last_audit"] = {
             "score": audit_result.score,
             "passed": audit_result.passed,
             "timestamp": self._now()
         }
         
-        # Determine next action
+        # Determine next action based on audit result and retry count
         if audit_result.passed:
             phase_state["status"] = PhaseStatus.PASSED.value
             self.state["audit_history"].append({
                 "phase": phase,
-                "attempt": attempt,
+                "attempt": current_attempt,
                 "passed": True,
                 "score": audit_result.score
             })
             self._save_state()
+            
+            logger.info(f"Phase '{phase}' passed audit ({audit_result.score}/100)")
             
             return {
                 "action": "proceed",
@@ -151,36 +222,36 @@ class PhaseGateway:
             }
         
         # Audit failed - check retry logic
-        should_retry, model_hint = auditor.should_retry(audit_result, attempt)
+        should_retry = current_attempt < self.MAX_RETRIES
         
         if should_retry:
             phase_state["status"] = PhaseStatus.AUDITING.value
             self._save_state()
             
-            feedback = auditor.get_retry_feedback(audit_result)
+            logger.info(f"Phase '{phase}' audit failed ({audit_result.score}/100). Retry recommended.")
             
             return {
                 "action": "retry",
                 "result": audit_result,
-                "model_hint": model_hint,
-                "feedback": feedback,
-                "message": f"⏳ Phase '{phase}' audit failed ({audit_result.score}/100). Retry attempt {attempt+1} recommended."
+                "message": f"⏳ Phase '{phase}' audit failed ({audit_result.score}/100). Retry attempt {current_attempt+1}/{self.MAX_RETRIES} available."
             }
         
         # All retries exhausted - block for user decision
         phase_state["status"] = PhaseStatus.BLOCKED.value
         self.state["audit_history"].append({
             "phase": phase,
-            "attempt": attempt,
+            "attempt": current_attempt,
             "passed": False,
             "score": audit_result.score
         })
         self._save_state()
         
+        logger.warning(f"Phase '{phase}' blocked after {current_attempt} attempts. User decision required.")
+        
         return {
             "action": "block",
             "result": audit_result,
-            "message": f"🚫 Phase '{phase}' blocked after {attempt} attempts. User decision required.",
+            "message": f"🚫 Phase '{phase}' blocked after {current_attempt}/{self.MAX_RETRIES} attempts. User decision required.",
             "options": [
                 "manual_fix",
                 "relax_constraint", 
@@ -297,9 +368,8 @@ class PhaseGateway:
         return self._phase_passed(current)
     
     def _now(self) -> str:
-        """Get current timestamp"""
-        from datetime import datetime
-        return datetime.now().isoformat()
+        """Get current timestamp with timezone"""
+        return datetime.now(timezone.utc).isoformat()
 
 
 def main():
