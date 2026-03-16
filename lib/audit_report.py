@@ -1,0 +1,354 @@
+"""
+BMAD-EVO Audit Report Generator
+Phase 1: Report generation and formatting
+
+Provides:
+- Markdown audit report generation
+- JSON audit log for history
+- User-friendly violation display
+"""
+
+import json
+import yaml
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+from dataclasses import asdict
+
+from constraint_checker import AuditResult, Violation, Severity, ConstraintType
+
+
+class AuditReportGenerator:
+    """Generate human-readable and machine-readable audit reports"""
+    
+    def __init__(self, project_path: str):
+        self.project_path = Path(project_path)
+        self.logs_dir = self.project_path / ".bmad" / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    def generate_markdown_report(
+        self, 
+        result: AuditResult,
+        phase: str,
+        attempt: int = 1,
+        output_path: Optional[str] = None
+    ) -> str:
+        """
+        Generate a detailed Markdown audit report
+        
+        Args:
+            result: AuditResult from constraint checker
+            phase: Current phase (e.g., "development", "architecture")
+            attempt: Retry attempt number
+            output_path: Optional custom output path
+            
+        Returns:
+            Path to generated report file
+        """
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = self.logs_dir / f"audit-{phase}-{timestamp}.md"
+        else:
+            output_path = Path(output_path)
+        
+        lines = []
+        
+        # Header
+        lines.extend([
+            "# BMAD-EVO 约束审计报告",
+            "",
+            f"**审计时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"**阶段**: {phase}",
+            f"**尝试次数**: {attempt}",
+            f"**审计结果**: {'✅ 通过' if result.passed else '❌ 未通过'}",
+            f"**得分**: {result.score}/100 (阈值: 85)",
+            "",
+            "---",
+            ""
+        ])
+        
+        # Summary
+        lines.extend([
+            "## 摘要",
+            "",
+            result.summary,
+            "",
+            "---",
+            ""
+        ])
+        
+        # Violations by severity
+        if result.violations:
+            lines.extend([
+                "## 违规项详情",
+                "",
+                f"共发现 **{len(result.violations)}** 个问题：",
+                ""
+            ])
+            
+            # Group by severity
+            high_priority = [v for v in result.violations if v.severity == Severity.HIGH]
+            medium_priority = [v for v in result.violations if v.severity == Severity.MEDIUM]
+            low_priority = [v for v in result.violations if v.severity == Severity.LOW]
+            
+            if high_priority:
+                lines.extend([
+                    "### 🔴 高优先级 (必须修复)",
+                    ""
+                ])
+                for i, v in enumerate(high_priority, 1):
+                    lines.extend(self._format_violation(v, i))
+                lines.append("")
+            
+            if medium_priority:
+                lines.extend([
+                    "### 🟡 中优先级 (建议修复)",
+                    ""
+                ])
+                for i, v in enumerate(medium_priority, 1):
+                    lines.extend(self._format_violation(v, i))
+                lines.append("")
+            
+            if low_priority:
+                lines.extend([
+                    "### 🟢 低优先级 (可选优化)",
+                    ""
+                ])
+                for i, v in enumerate(low_priority, 1):
+                    lines.extend(self._format_violation(v, i))
+                lines.append("")
+        else:
+            lines.extend([
+                "## 违规项详情",
+                "",
+                "✅ 未发现违规项",
+                "",
+                "---",
+                ""
+            ])
+        
+        # Must fix summary
+        if result.must_fix:
+            lines.extend([
+                "## 必须修复项",
+                "",
+                "以下约束类型必须修复才能继续：",
+                ""
+            ])
+            for item in result.must_fix:
+                lines.append(f"- [ ] {item}")
+            lines.extend(["", "---", ""])
+        
+        # Next steps
+        lines.extend([
+            "## 下一步行动",
+            ""
+        ])
+        
+        if result.passed:
+            lines.extend([
+                "✅ **审计通过**，可以进入下一阶段。",
+                "",
+                "建议：",
+                "- 查看低优先级建议，持续改进代码质量",
+                "- 将本次审计经验沉淀到模式库"
+            ])
+        else:
+            lines.extend([
+                "❌ **审计未通过**，需要修复后重试。",
+                "",
+                "选项：",
+                "1. **自动重试**：修复高优先级问题后自动重新审计",
+                "2. **手动修复**：根据违规项详情手动修改代码",
+                "3. **调整约束**：如果约束设定过严，可修改约束配置",
+                "4. **强制通过**：不推荐，除非明确接受质量风险"
+            ])
+        
+        lines.extend(["", "---", ""])
+        
+        # Footer
+        lines.extend([
+            "",
+            "*Generated by BMAD-EVO Constraint Auditor*",
+            f"*Project: {self.project_path.name}*"
+        ])
+        
+        # Write file
+        content = "\n".join(lines)
+        output_path.write_text(content, encoding='utf-8')
+        
+        return str(output_path)
+    
+    def _format_violation(self, violation: Violation, index: int) -> List[str]:
+        """Format a single violation for markdown"""
+        lines = [
+            f"{index}. **{violation.constraint_type.value}**",
+            f"   - **问题**: {violation.description}",
+            f"   - **证据**: `{violation.evidence[:100]}{'...' if len(violation.evidence) > 100 else ''}`"
+        ]
+        if violation.line_number:
+            lines.append(f"   - **位置**: 第 {violation.line_number} 行")
+        lines.append(f"   - **建议**: {violation.suggestion}")
+        lines.append("")
+        return lines
+    
+    def save_json_log(
+        self, 
+        result: AuditResult,
+        phase: str,
+        attempt: int,
+        metadata: Optional[Dict] = None
+    ) -> str:
+        """
+        Save audit result as JSON for history tracking
+        
+        Returns:
+            Path to JSON log file
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = self.logs_dir / f"audit-{phase}-{timestamp}.json"
+        
+        log_entry = {
+            "timestamp": timestamp,
+            "phase": phase,
+            "attempt": attempt,
+            "result": result.to_dict(),
+            "metadata": metadata or {}
+        }
+        
+        with open(log_path, 'w', encoding='utf-8') as f:
+            json.dump(log_entry, f, ensure_ascii=False, indent=2)
+        
+        return str(log_path)
+    
+    def get_audit_history(self, limit: int = 10) -> List[Dict]:
+        """Get recent audit history"""
+        history = []
+        
+        json_files = sorted(
+            self.logs_dir.glob("audit-*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )[:limit]
+        
+        for f in json_files:
+            with open(f, 'r', encoding='utf-8') as file:
+                history.append(json.load(file))
+        
+        return history
+    
+    def generate_retry_feedback(self, result: AuditResult) -> str:
+        """
+        Generate concise feedback for retry attempts
+        
+        Returns a string that can be passed to the agent for retry
+        """
+        if result.passed:
+            return "审计通过，无需重试。"
+        
+        lines = [
+            "约束审计未通过，需要修复以下问题：",
+            ""
+        ]
+        
+        # Only include HIGH and MEDIUM for retry feedback
+        important = [v for v in result.violations if v.severity in (Severity.HIGH, Severity.MEDIUM)]
+        
+        for v in important[:5]:  # Limit to top 5
+            lines.append(f"- [{v.severity.value.upper()}] {v.constraint_type.value}: {v.description}")
+            lines.append(f"  建议: {v.suggestion}")
+            lines.append("")
+        
+        lines.append("请修复以上问题后重新提交。")
+        
+        return "\n".join(lines)
+
+
+class QuickReport:
+    """Quick console output for command-line usage"""
+    
+    @staticmethod
+    def print_summary(result: AuditResult):
+        """Print a quick summary to console"""
+        print(f"\n{'='*60}")
+        print(f"约束审计结果: {'✅ 通过' if result.passed else '❌ 未通过'}")
+        print(f"得分: {result.score}/100 (阈值: 85)")
+        print(f"{'='*60}\n")
+        
+        if result.violations:
+            high = sum(1 for v in result.violations if v.severity == Severity.HIGH)
+            med = sum(1 for v in result.violations if v.severity == Severity.MEDIUM)
+            low = sum(1 for v in result.violations if v.severity == Severity.LOW)
+            
+            print(f"发现问题统计:")
+            print(f"  🔴 高优先级: {high}")
+            print(f"  🟡 中优先级: {med}")
+            print(f"  🟢 低优先级: {low}\n")
+            
+            if high > 0:
+                print("必须修复的高优先级问题:")
+                for v in result.violations:
+                    if v.severity == Severity.HIGH:
+                        print(f"  - {v.constraint_type.value}: {v.description}")
+                print()
+        else:
+            print("未发现违规项\n")
+        
+        print(result.summary)
+        print()
+
+
+# Utility functions
+def load_constraints_from_project(project_path: str) -> Optional[Dict]:
+    """Load constraints from project charter"""
+    charter_path = Path(project_path) / ".bmad" / "project-charter.yaml"
+    
+    if not charter_path.exists():
+        return None
+    
+    with open(charter_path, 'r', encoding='utf-8') as f:
+        data = yaml.safe_load(f)
+    
+    return data.get("constraints", {})
+
+
+def create_default_constraints() -> Dict[str, Any]:
+    """Create default constraints for code projects"""
+    return {
+        "boundary_check": [
+            {"check_null": True, "check_empty": True}
+        ],
+        "exception_handling": [
+            {"check_io": True, "check_network": True, "no_bare_except": True}
+        ],
+        "code_structure": [
+            {"max_function_lines": 50, "max_file_lines": 500}
+        ],
+        "readability": [
+            {"require_docstrings": True, "min_variable_length": 2}
+        ],
+        "security": [
+            {"check_secrets": True, "check_injection": True}
+        ]
+    }
+
+
+if __name__ == "__main__":
+    # Test
+    from constraint_checker import check_constraints
+    
+    test_code = '''
+def fetch_data(url):
+    response = requests.get(url)
+    return response.json()
+'''
+    
+    result = check_constraints(test_code)
+    
+    # Quick console output
+    QuickReport.print_summary(result)
+    
+    # Generate full report
+    generator = AuditReportGenerator("/tmp/test-project")
+    report_path = generator.generate_markdown_report(result, "development", attempt=1)
+    print(f"\n详细报告已生成: {report_path}")

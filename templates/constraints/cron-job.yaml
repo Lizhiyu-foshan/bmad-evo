@@ -1,0 +1,86 @@
+# BMAD-EVO Constraint Template: Cron Job / Scheduled Task
+# 适用于：定时任务、调度系统、后台服务
+
+constraints:
+  # 边界检查
+  boundary_check:
+    - check_null: true
+      check_empty: true
+      description: "所有函数参数必须检查空值"
+    - check_range: true
+      description: "时间参数必须检查有效性（如间隔>0）"
+  
+  # 异常处理（定时任务最关键）
+  exception_handling:
+    - check_io: true
+      description: "所有IO操作必须有异常处理"
+    - check_network: true
+      description: "网络请求必须处理超时和重试"
+    - no_bare_except: true
+      description: "禁止使用裸except，必须捕获具体异常"
+    - require_finally: true
+      description: "资源释放必须在finally块中"
+  
+  # 代码结构
+  code_structure:
+    - max_function_lines: 40
+      description: "函数不超过40行（定时任务逻辑应简洁）"
+    - max_file_lines: 400
+      description: "单文件不超过400行"
+    - require_main_guard: true
+      description: "必须有 if __name__ == '__main__' 保护"
+  
+  # 可读性
+  readability:
+    - require_docstrings: true
+      description: "所有函数必须有docstring说明用途和参数"
+    - require_comments: true
+      description: "复杂逻辑必须有注释"
+    - min_variable_length: 3
+      description: "变量名至少3个字符（除循环变量外）"
+  
+  # 安全性
+  security:
+    - check_secrets: true
+      description: "禁止硬编码密钥、密码"
+    - check_injection: true
+      description: "防止命令注入和SQL注入"
+    - validate_inputs: true
+      description: "所有外部输入必须验证"
+  
+  # 定时任务特有约束
+  cron_specific:
+    - idempotent: true
+      description: "任务必须是幂等的（多次执行无副作用）"
+    - timeout_handling: true
+      description: "必须设置超时机制，防止任务挂起"
+    - logging_required: true
+      description: "必须有完整的日志记录（开始、结束、异常）"
+    - state_persistence: true
+      description: "状态必须持久化，支持断点续传"
+  
+  # 自定义约束（针对OpenClaw定时任务的特定问题）
+  custom:
+    - pattern: "record_message_received|is_message_received"
+      must_exist: true
+      severity: high
+      description: "飞书消息去重必须使用指纹记录机制"
+      suggestion: "参考 feishu_receive_dedup 模块"
+    
+    - pattern: "sessions_spawn|agentTurn"
+      must_exist: false
+      severity: medium
+      description: "避免在子Agent中嵌套创建子Agent（可能导致递归）"
+      suggestion: "使用systemEvent或直接执行替代"
+    
+    - pattern: "try:\\s*\\n.*except.*:\\s*\\n.*pass"
+      must_exist: false
+      severity: high
+      description: "禁止空except-pass（静默吞掉异常）"
+      suggestion: "至少记录日志或重新抛出"
+    
+    - pattern: "open\s*\(.*,\s*['\"]w['\"]"
+      must_exist: false
+      severity: medium
+      description: "写文件时考虑使用 'a' 追加模式而非 'w' 覆盖"
+      suggestion: "避免意外覆盖已有数据"
