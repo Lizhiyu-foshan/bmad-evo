@@ -54,9 +54,9 @@ class PhaseGateway:
     - PASS_THRESHOLD: Minimum score to pass audit (default: 85)
     """
     
-    # Configuration constants (can be overridden in config file)
-    MAX_RETRIES = 3
-    PASS_THRESHOLD = 85
+    # Default configuration constants (can be overridden via config file)
+    DEFAULT_MAX_RETRIES = 3
+    DEFAULT_PASS_THRESHOLD = 85
     
     def __init__(self, project_path: str, config: Optional[Dict[str, Any]] = None):
         self.project_path = Path(project_path)
@@ -67,8 +67,8 @@ class PhaseGateway:
         
         # Load configuration
         self.config = config or self._load_config()
-        self.MAX_RETRIES = self.config.get('max_retries', 3)
-        self.PASS_THRESHOLD = self.config.get('pass_threshold', 85)
+        self.MAX_RETRIES = self.config.get('max_retries', self.DEFAULT_MAX_RETRIES)
+        self.PASS_THRESHOLD = self.config.get('pass_threshold', self.DEFAULT_PASS_THRESHOLD)
         
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         

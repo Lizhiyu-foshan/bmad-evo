@@ -12,6 +12,7 @@ Provides:
 import sys
 import json
 import subprocess
+import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -21,6 +22,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from constraint_auditor import ConstraintAuditor
 from phase_gateway import PhaseGateway
 from decision_interface import DecisionInterface
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 class WorkflowOrchestrator:
@@ -151,61 +156,55 @@ class WorkflowOrchestrator:
         Returns:
             True if audit passed or user forced proceed, False otherwise
         """
-        attempt = 0
-        
+        # Gateway manages attempts internally - we just loop until terminal state
         while True:
-            attempt += 1
-            print(f"\n🔍 Audit attempt {attempt}/{self.max_retries}")
-            
             # Run audit
-            result = self.auditor.audit(output, phase, attempt)
+            result = self.auditor.audit(output, phase, attempt=1)  # attempt number tracked by gateway
             
             # Complete phase via gateway (gateway determines next action)
-            gateway_result = self.gateway.complete_phase(phase, result, attempt)
+            gateway_result = self.gateway.complete_phase(phase, result)
             
             action = gateway_result['action']
             
             if action == "proceed":
-                print(f"✅ {gateway_result['message']}")
+                logger.info(f"Audit passed: {gateway_result['message']}")
                 return True
             
             elif action == "retry":
                 # Gateway says retry - get feedback and continue
-                if attempt < self.max_retries:
-                    feedback = self.auditor.get_retry_feedback(result)
-                    print(f"\n⏳ {gateway_result['message']}")
-                    print(f"\n💡 Feedback for retry:\n{feedback[:500]}...")
-                    
-                    # In interactive mode, wait for user to fix
-                    if self.interactive:
-                        input("\n⏸️  Press Enter after fixing the issues (or Ctrl+C to abort)...")
-                        # Re-read output if file changed
-                        output_file = self.project_path / ".bmad" / f"{phase}-output.txt"
-                        if output_file.exists():
-                            output = output_file.read_text(encoding='utf-8')
-                    # In non-interactive mode, retry with same output (will fail again unless externally fixed)
-                else:
-                    # Shouldn't reach here - gateway should have returned "block"
-                    break
+                feedback = self.auditor.get_retry_feedback(result)
+                logger.info(f"Retry recommended: {gateway_result['message']}")
+                logger.info(f"Feedback: {feedback[:200]}...")
+                
+                # In interactive mode, wait for user to fix
+                if self.interactive:
+                    input("\n⏸️  Press Enter after fixing the issues (or Ctrl+C to abort)...")
+                    # Re-read output if file changed
+                    output_file = self.project_path / ".bmad" / f"{phase}-output.txt"
+                    if output_file.exists():
+                        output = output_file.read_text(encoding='utf-8')
+                # In non-interactive mode, retry with same output (will fail again unless externally fixed)
+                # Continue loop for retry
             
             elif action == "block":
                 # All retries exhausted - user decision required
-                print(f"\n🚫 {gateway_result['message']}")
+                logger.warning(f"Phase blocked: {gateway_result['message']}")
                 if self.interactive:
                     return self._handle_user_decision(phase, result)
                 else:
-                    print(f"❌ Non-interactive mode: audit failed after {attempt} attempts")
+                    logger.error(f"Non-interactive mode: audit failed after {self.gateway.MAX_RETRIES} attempts")
                     return False
             
             elif action == "error":
-                print(f"❌ Gateway error: {gateway_result.get('message', 'Unknown error')}")
+                logger.error(f"Gateway error: {gateway_result.get('message', 'Unknown error')}")
                 return False
         
+        # Should not reach here
         return False
     
     def _handle_user_decision(self, phase: str, result) -> bool:
         """Handle user decision when audit fails"""
-        print(f"\n🚫 All retry attempts exhausted for {phase}")
+        logger.warning(f"All retry attempts exhausted for phase {phase}")
         
         # Get max attempts from gateway config
         max_attempts = self.gateway.MAX_RETRIES
@@ -218,7 +217,7 @@ class WorkflowOrchestrator:
         # Process decision via gateway
         gateway_result = self.gateway.user_decision(phase, choice)
         
-        print(f"\n📋 Decision result: {gateway_result['message']}")
+        logger.info(f"Decision result: {gateway_result['message']}")
         
         if choice == "manual_fix":
             # Wait for user to fix
@@ -233,7 +232,7 @@ class WorkflowOrchestrator:
             return False
         
         elif choice == "relax_constraint":
-            print("📝 Creating relaxed constraints...")
+            logger.info("Creating relaxed constraints...")
             # Would create new auditor with relaxed constraints
             # For now, just retry once with same output
             output_file = self.project_path / ".bmad" / f"{phase}-output.txt"
@@ -243,11 +242,11 @@ class WorkflowOrchestrator:
             return False
         
         elif choice == "force_proceed":
-            print("⚠️  Forcing proceed with acknowledged quality risk")
+            logger.warning("Forcing proceed with acknowledged quality risk")
             return True
         
         elif choice == "abort":
-            print("❌ Phase aborted")
+            logger.info("Phase aborted by user decision")
             return False
         
         return False

@@ -16,6 +16,7 @@ Supports:
 import json
 import sys
 import os
+import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
@@ -23,6 +24,10 @@ from dataclasses import dataclass
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
 from constraint_checker import AuditResult, Severity
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -172,7 +177,7 @@ class DecisionInterface:
             # Try to get decision from environment variable (CI/CD)
             ci_decision = os.environ.get('BMAD_DECISION')
             if ci_decision:
-                print(f"\n🤖 CI/CD mode: Using decision from BMAD_DECISION: {ci_decision}")
+                logger.info(f"CI/CD mode: Using decision from BMAD_DECISION: {ci_decision}")
                 return ci_decision.lower()
             
             # Try to read from stdin (piped input)
@@ -184,18 +189,18 @@ class DecisionInterface:
                         data = json.loads(input_data)
                         choice = data.get('decision', '').lower()
                         if choice:
-                            print(f"\n🤖 CI/CD mode: Using decision from stdin: {choice}")
+                            logger.info(f"CI/CD mode: Using decision from stdin: {choice}")
                             return choice
                     except json.JSONDecodeError:
                         # Plain text decision
                         choice = input_data.lower()
-                        print(f"\n🤖 CI/CD mode: Using decision from stdin: {choice}")
+                        logger.info(f"CI/CD mode: Using decision from stdin: {choice}")
                         return choice
             except (EOFError, KeyboardInterrupt):
                 pass
             
             # No input provided, default to manual_fix
-            print("\n⚠️  No decision provided in CI/CD mode. Defaulting to 'manual_fix'.")
+            logger.warning("No decision provided in CI/CD mode. Defaulting to 'manual_fix'.")
             return "manual_fix"
         
         # Interactive mode: use prompts
@@ -228,7 +233,7 @@ class DecisionInterface:
                     print("Invalid choice. Please enter 1, 2, 3, 4 or the option name.")
             
             except (EOFError, KeyboardInterrupt):
-                print("\n\nInterrupted. Defaulting to 'manual_fix'.")
+                logger.warning("Interactive input interrupted. Defaulting to 'manual_fix'.")
                 return "manual_fix"
     
     def _get_reason(self, choice: str) -> str:
@@ -240,10 +245,11 @@ class DecisionInterface:
             "abort": "User chose to abort phase"
         }
         
-        # Non-interactive mode: skip prompt
+        # Non-interactive mode: skip prompt, use automated reason
         if not self.interactive:
             return f"CI/CD automated decision: {choice}"
         
+        # Interactive mode: ask for reason
         print(f"\nYou chose: {choice}")
         
         try:
@@ -251,7 +257,7 @@ class DecisionInterface:
             if custom_reason:
                 return custom_reason
         except (EOFError, KeyboardInterrupt):
-            pass
+            logger.warning("Reason input interrupted, using default reason")
         
         return reasons.get(choice, "No reason provided")
     
