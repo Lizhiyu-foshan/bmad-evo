@@ -7,10 +7,15 @@ Provides:
 - Display audit results in user-friendly format
 - Handle user choices (retry, relax, force, abort)
 - Generate decision records
+
+Supports:
+- Interactive mode (CLI with prompts)
+- Non-interactive mode (CI/CD with JSON input)
 """
 
 import json
 import sys
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
@@ -41,44 +46,53 @@ class DecisionInterface:
     - Risk warnings for dangerous choices
     """
     
-    def __init__(self, project_path: str):
+    def __init__(self, project_path: str, interactive: bool = True):
         self.project_path = Path(project_path)
         self.bmad_dir = self.project_path / ".bmad"
         self.decisions_dir = self.bmad_dir / "decisions"
         self.decisions_dir.mkdir(parents=True, exist_ok=True)
+        self.interactive = interactive
     
     def present_blocked_phase(
         self,
         phase: str,
         audit_result: AuditResult,
         attempt: int,
+        max_attempts: int,
         report_path: str
     ) -> str:
         """
         Present blocked phase to user and get decision
         
+        Args:
+            phase: Blocked phase name
+            audit_result: Audit result with violations
+            attempt: Current attempt number
+            max_attempts: Maximum attempts (from gateway config)
+            report_path: Path to audit report
+            
         Returns:
             User decision choice (manual_fix, relax_constraint, force_proceed, abort)
         """
-        self._print_header(phase, audit_result, attempt)
+        self._print_header(phase, audit_result, attempt, max_attempts)
         self._print_violations(audit_result)
         self._print_options(audit_result)
         
         choice = self._get_user_choice(audit_result)
         
-        # Record decision
+        # Record decision with full context
         reason = self._get_reason(choice)
-        self._record_decision(phase, choice, reason, audit_result)
+        self._record_decision(phase, choice, reason, audit_result, max_attempts, report_path)
         
         return choice
     
-    def _print_header(self, phase: str, audit_result: AuditResult, attempt: int):
+    def _print_header(self, phase: str, audit_result: AuditResult, attempt: int, max_attempts: int):
         """Print phase blocked header"""
         print("\n" + "="*70)
         print("🚫 PHASE BLOCKED - USER DECISION REQUIRED")
         print("="*70)
         print(f"\nPhase: {phase}")
-        print(f"Attempt: {attempt}/3 (all retries exhausted)")
+        print(f"Attempt: {attempt}/{max_attempts} (all retries exhausted)")
         print(f"Audit Score: {audit_result.score}/100 (threshold: 85)")
         print(f"Status: {'✅ PASSED' if audit_result.passed else '❌ FAILED'}")
         
@@ -153,6 +167,38 @@ class DecisionInterface:
     
     def _get_user_choice(self, audit_result: AuditResult) -> str:
         """Get and validate user choice"""
+        # Non-interactive mode: read from environment or stdin JSON
+        if not self.interactive:
+            # Try to get decision from environment variable (CI/CD)
+            ci_decision = os.environ.get('BMAD_DECISION')
+            if ci_decision:
+                print(f"\n🤖 CI/CD mode: Using decision from BMAD_DECISION: {ci_decision}")
+                return ci_decision.lower()
+            
+            # Try to read from stdin (piped input)
+            try:
+                input_data = sys.stdin.read().strip()
+                if input_data:
+                    # Try to parse as JSON
+                    try:
+                        data = json.loads(input_data)
+                        choice = data.get('decision', '').lower()
+                        if choice:
+                            print(f"\n🤖 CI/CD mode: Using decision from stdin: {choice}")
+                            return choice
+                    except json.JSONDecodeError:
+                        # Plain text decision
+                        choice = input_data.lower()
+                        print(f"\n🤖 CI/CD mode: Using decision from stdin: {choice}")
+                        return choice
+            except (EOFError, KeyboardInterrupt):
+                pass
+            
+            # No input provided, default to manual_fix
+            print("\n⚠️  No decision provided in CI/CD mode. Defaulting to 'manual_fix'.")
+            return "manual_fix"
+        
+        # Interactive mode: use prompts
         valid_choices = {
             "1": "manual_fix",
             "2": "relax_constraint",
@@ -194,6 +240,10 @@ class DecisionInterface:
             "abort": "User chose to abort phase"
         }
         
+        # Non-interactive mode: skip prompt
+        if not self.interactive:
+            return f"CI/CD automated decision: {choice}"
+        
         print(f"\nYou chose: {choice}")
         
         try:
@@ -210,9 +260,11 @@ class DecisionInterface:
         phase: str,
         decision: str,
         reason: str,
-        audit_result: AuditResult
+        audit_result: AuditResult,
+        max_attempts: int = 3,
+        report_path: str = ""
     ):
-        """Record decision to file"""
+        """Record decision to file with full context"""
         from datetime import datetime
         
         record = DecisionRecord(
@@ -224,7 +276,7 @@ class DecisionInterface:
             risk_accepted=(decision == "force_proceed")
         )
         
-        # Save to JSON
+        # Save to JSON with complete audit context
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         decision_file = self.decisions_dir / f"decision-{phase}-{timestamp}.json"
         
@@ -236,8 +288,16 @@ class DecisionInterface:
                 "timestamp": record.timestamp,
                 "audit_score": record.audit_score,
                 "risk_accepted": record.risk_accepted,
+                "max_attempts": max_attempts,
+                "report_path": report_path,
                 "violations_count": len(audit_result.violations),
-                "must_fix_items": audit_result.must_fix
+                "violations_by_severity": {
+                    "high": len([v for v in audit_result.violations if v.severity == Severity.HIGH]),
+                    "medium": len([v for v in audit_result.violations if v.severity == Severity.MEDIUM]),
+                    "low": len([v for v in audit_result.violations if v.severity == Severity.LOW])
+                },
+                "must_fix_items": audit_result.must_fix,
+                "constraint_types_violated": list(set(v.constraint_type.value for v in audit_result.violations))
             }, f, ensure_ascii=False, indent=2)
         
         print(f"\n📝 Decision recorded: {decision_file}")

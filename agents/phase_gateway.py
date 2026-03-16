@@ -137,9 +137,20 @@ class PhaseGateway:
                 logger.warning(f"Missing state key '{key}', initialized to default")
     
     def _save_state(self):
-        """Save phase state to disk"""
-        with open(self.state_file, 'w', encoding='utf-8') as f:
-            json.dump(self.state, f, ensure_ascii=False, indent=2)
+        """Save phase state to disk with error handling"""
+        try:
+            # Atomic write: write to temp file first, then rename
+            temp_file = self.state_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(self.state, f, ensure_ascii=False, indent=2)
+            temp_file.rename(self.state_file)
+        except IOError as e:
+            logger.error(f"Failed to save state: {e}")
+            # State not saved, but don't crash - will retry on next operation
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error saving state: {e}")
+            raise
     
     def start_phase(self, phase: str) -> bool:
         """
