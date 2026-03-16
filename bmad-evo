@@ -1,61 +1,131 @@
 #!/bin/bash
-# BMAD-EVO CLI wrapper
+# BMAD-EVO CLI Wrapper v2.0
 # Usage: bmad-evo [command] [options]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Find Python scripts
 AUDITOR="$SCRIPT_DIR/agents/constraint_auditor.py"
+GATEWAY="$SCRIPT_DIR/agents/phase_gateway.py"
+DECISION="$SCRIPT_DIR/agents/decision_interface.py"
+WORKFLOW="$SCRIPT_DIR/agents/workflow_orchestrator.py"
 
 show_help() {
-    echo "BMAD-EVO v2.0 - 进化版多Agent开发框架"
-    echo ""
-    echo "Usage: bmad-evo [command] [options]"
-    echo ""
-    echo "Commands:"
-    echo "  init [template]     初始化项目 (--template cron-job|api-service)"
-    echo "  audit               运行约束审计"
-    echo "  history             查看审计历史"
-    echo "  check               检查阶段状态"
-    echo "  help                显示帮助"
-    echo ""
-    echo "Examples:"
-    echo "  bmad-evo init --template cron-job"
-    echo "  bmad-evo audit --phase development --file main.py"
-    echo "  cat code.py | bmad-evo audit --phase development"
-    echo "  bmad-evo history --limit 5"
-    echo "  bmad-evo check --phase development"
+    cat << 'EOF'
+BMAD-EVO v2.0 - 进化版多Agent开发框架
+
+USAGE:
+    bmad-evo [command] [options]
+
+COMMANDS:
+
+  Project Setup:
+    init [template]           初始化项目
+                              --template cron-job|api-service
+
+  Audit Commands:
+    audit                     运行约束审计
+                              --phase <name> --file <path>
+    history                   查看审计历史
+                              --limit <n>
+    check                     检查阶段状态
+
+  Phase Gateway (v2.0):
+    phase start <name>        开始阶段
+    phase status              查看阶段状态
+    phase decision <name>     用户决策
+                              --choice manual|relax|force|abort
+
+  Workflow (v2.0):
+    run                       运行完整工作流
+                              --strict         严格模式（审计必需）
+                              --phases a b c   指定阶段
+                              --ci             CI模式（非交互）
+    workflow status           查看工作流状态
+
+  Decision Records:
+    decision history          查看决策历史
+    decision summary          查看决策统计
+
+EXAMPLES:
+
+    # 初始化定时任务项目
+    bmad-evo init --template cron-job
+
+    # 审计代码
+    bmad-evo audit --phase development --file src/main.py
+
+    # 运行严格模式工作流
+    bmad-evo run --strict
+
+    # 只运行开发和测试阶段
+    bmad-evo run --strict --phases development qa
+
+    # CI/CD 非交互模式
+    bmad-evo run --strict --ci
+
+ENVIRONMENT:
+    BMAD_EVO_SKILL    Skill目录路径（默认自动检测）
+
+EOF
 }
 
-# Check if running from skill directory or project directory
+# Detect skill directory
 if [ -f "$AUDITOR" ]; then
     # Running from skill directory
     PYTHON_CMD="python3"
 elif [ -f ".bmad/project-charter.yaml" ]; then
-    # Running from project directory, find skill
-    SKILL_DIR="${BMAD_EVO_SKILL:-/root/.openclaw/skills/bmad-evo}"
+    # Running from project directory
+    if [ -n "$BMAD_EVO_SKILL" ]; then
+        SKILL_DIR="$BMAD_EVO_SKILL"
+    else
+        # Try to find skill in common locations
+        for dir in /root/.openclaw/skills/bmad-evo ~/.openclaw/skills/bmad-evo; do
+            if [ -f "$dir/agents/constraint_auditor.py" ]; then
+                SKILL_DIR="$dir"
+                break
+            fi
+        done
+    fi
+    
+    if [ -z "$SKILL_DIR" ]; then
+        echo "Error: Cannot find BMAD-EVO skill."
+        echo "Please set BMAD_EVO_SKILL environment variable."
+        exit 1
+    fi
+    
     AUDITOR="$SKILL_DIR/agents/constraint_auditor.py"
+    GATEWAY="$SKILL_DIR/agents/phase_gateway.py"
+    DECISION="$SKILL_DIR/agents/decision_interface.py"
+    WORKFLOW="$SKILL_DIR/agents/workflow_orchestrator.py"
     PYTHON_CMD="python3"
 else
-    echo "Error: Cannot find BMAD-EVO skill."
-    echo "Please set BMAD_EVO_SKILL environment variable or run from skill directory."
+    echo "Error: Cannot find BMAD-EVO skill and not in a project directory."
     exit 1
 fi
 
 # Main command dispatcher
 case "${1:-help}" in
+    # Project setup
     init)
         shift
         TEMPLATE="${2:-default}"
         echo "Initializing BMAD-EVO project with template: $TEMPLATE"
         
-        mkdir -p .bmad/decisions .bmad/checkpoints .bmad/logs
+        mkdir -p .bmad/{decisions,checkpoints,logs}
         
         # Copy template constraints
-        if [ -f "$SCRIPT_DIR/templates/constraints/$TEMPLATE.yaml" ]; then
-            cp "$SCRIPT_DIR/templates/constraints/$TEMPLATE.yaml" .bmad/project-charter.yaml
+        TEMPLATE_FILE="$SCRIPT_DIR/templates/constraints/$TEMPLATE.yaml"
+        if [ -n "$SKILL_DIR" ]; then
+            TEMPLATE_FILE="$SKILL_DIR/templates/constraints/$TEMPLATE.yaml"
+        fi
+        
+        if [ -f "$TEMPLATE_FILE" ]; then
+            cp "$TEMPLATE_FILE" .bmad/project-charter.yaml
             echo "✅ Created .bmad/project-charter.yaml from template: $TEMPLATE"
         else
             echo "⚠️  Template not found: $TEMPLATE, creating default"
-            cat > .bmad/project-charter.yaml << 'EOF'
+            cat > .bmad/project-charter.yaml << 'DEFAULT'
 project:
   name: ""
   vision: ""
@@ -71,12 +141,17 @@ constraints:
     - require_docstrings: true
   security:
     - check_secrets: true
-EOF
+DEFAULT
         fi
         
         echo "✅ Project initialized. Edit .bmad/project-charter.yaml to customize constraints."
+        echo ""
+        echo "Quick start:"
+        echo "  1. Edit .bmad/project-charter.yaml"
+        echo "  2. Run: bmad-evo run --strict"
         ;;
     
+    # Audit commands
     audit)
         shift
         $PYTHON_CMD "$AUDITOR" audit "$@"
@@ -94,12 +169,76 @@ EOF
         exit $?
         ;;
     
+    # Phase gateway commands
+    phase)
+        shift
+        case "${1:-status}" in
+            start)
+                shift
+                $PYTHON_CMD "$GATEWAY" --project . start "$@"
+                exit $?
+                ;;
+            status)
+                $PYTHON_CMD "$GATEWAY" --project . status
+                ;;
+            decision)
+                shift
+                $PYTHON_CMD "$GATEWAY" --project . decision "$@"
+                exit $?
+                ;;
+            *)
+                echo "Usage: bmad-evo phase {start|status|decision}"
+                exit 1
+                ;;
+        esac
+        ;;
+    
+    # Workflow commands
+    run)
+        shift
+        $PYTHON_CMD "$WORKFLOW" --project . run "$@"
+        exit $?
+        ;;
+    
+    workflow)
+        shift
+        case "${1:-status}" in
+            status)
+                $PYTHON_CMD "$WORKFLOW" --project . status
+                ;;
+            *)
+                echo "Usage: bmad-evo workflow {status}"
+                exit 1
+                ;;
+        esac
+        ;;
+    
+    # Decision commands
+    decision)
+        shift
+        case "${1:-history}" in
+            history)
+                shift
+                $PYTHON_CMD "$DECISION" --project . history "$@"
+                ;;
+            summary)
+                $PYTHON_CMD "$DECISION" --project . summary
+                ;;
+            *)
+                echo "Usage: bmad-evo decision {history|summary}"
+                exit 1
+                ;;
+        esac
+        ;;
+    
+    # Help
     help|--help|-h)
         show_help
         ;;
     
     *)
         echo "Unknown command: $1"
+        echo ""
         show_help
         exit 1
         ;;

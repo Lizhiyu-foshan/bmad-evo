@@ -79,7 +79,7 @@ constraints:
       description: "禁止空except-pass（静默吞掉异常）"
       suggestion: "至少记录日志或重新抛出"
     
-    - pattern: "open\s*\(.*,\s*['\"]w['\"]"
+    - pattern: 'open\s*\(.*,\s*["'"'"']w["'"'"']'
       must_exist: false
       severity: medium
       description: "写文件时考虑使用 'a' 追加模式而非 'w' 覆盖"
