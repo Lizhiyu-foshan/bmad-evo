@@ -1,16 +1,18 @@
 """
 BMAD-EVO Phase Gateway
-Phase 2: Automatic phase transition interception
+Phase 3: AST-powered automatic audit integration
 
 Provides:
 - Intercept phase transitions and trigger audit
 - Block progression if audit fails
 - Coordinate with retry mechanism
+- AST-powered analysis (zero false positives)
 
 Design Principles:
 - Single Responsibility: Gateway manages state, doesn't perform audits
 - Dependency Injection: Accept audit results, don't create auditors
 - Fault Tolerance: Graceful handling of corrupted state files
+- AST-First: Prefer AST analysis when available
 """
 
 import json

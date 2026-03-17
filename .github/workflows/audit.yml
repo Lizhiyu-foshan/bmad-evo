@@ -1,0 +1,47 @@
+name: BMAD-EVO Code Quality Check
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyyaml  # BMAD-EVO 需要
+    
+    - name: BMAD-EVO Fast Audit
+      run: |
+        echo "🔍 运行快速审计（AST only）"
+        python3 /path/to/bmad-evo/quick_audit.py --mode fast --exit-code your_code.py
+      continue-on-error: false
+    
+    - name: BMAD-EVO Strict Audit
+      run: |
+        echo "🔍 运行严格审计（AST + regex）"
+        python3 /path/to/bmad-evo/quick_audit.py --mode strict --exit-code your_code.py
+      continue-on-error: true  # 严格审计仅作为参考
+    
+    - name: Upload audit report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: audit-report
+        path: |
+          *.audit.json
+          *.audit.md
+        retention-days: 30

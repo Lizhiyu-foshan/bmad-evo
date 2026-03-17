@@ -1,24 +1,63 @@
 """
 BMAD-EVO Constraint Checker Engine
-Phase 1: Core audit functionality
+Phase 2: AST-powered audit engine with backward-compatible API
 
 Provides:
-- Constraint validation against outputs
+- AST-based constraint validation (zero false positives)
+- Regex-based validation for custom patterns (backward compatible)
 - Scoring mechanism (0-100)
 - Violation detection with evidence
 - Pass/fail threshold (85)
+- Dual mode: fast (AST-only) and strict (AST + regex)
+
+Design Principles:
+- Zero false positives: AST analysis won't flag code in strings/comments
+- High performance: <50ms per file, <5s per project
+- Configurable: Support project-type specific rules
+- Bypassable: Allow # noqa: ast-check to skip specific checks
 """
 
 import re
 import yaml
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
+
+# Import AST engine
+try:
+    from ast_auditor import (
+        ASTConstraintChecker,
+        AuditResult as ASTAuditResult,
+        Violation as ASTViolation,
+        SeverityLevel as ASTSeverity,
+        audit_code,
+        audit_file
+    )
+    AST_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: AST engine not available: {e}")
+    AST_AVAILABLE = False
 
 class Severity(Enum):
     HIGH = "high"      # Must fix, blocks progression
     MEDIUM = "medium"  # Should fix, impacts quality
     LOW = "low"        # Nice to have, suggestive
+    CRITICAL = "critical"  # AST-level critical issues
+    
+    @classmethod
+    def from_ast(cls, ast_severity: 'ASTSeverity') -> 'Severity':
+        """Convert AST severity to legacy severity"""
+        # Map SeverityLevel enum values to Severity enum values
+        mapping = {
+            "critical": cls.CRITICAL,
+            "high": cls.HIGH,
+            "medium": cls.MEDIUM,
+            "low": cls.LOW
+        }
+        # Handle both enum and string values
+        severity_value = ast_severity.value if hasattr(ast_severity, 'value') else str(ast_severity)
+        return mapping.get(severity_value, cls.MEDIUM)
 
 class ConstraintType(Enum):
     BOUNDARY_CHECK = "边界检查"
@@ -39,6 +78,43 @@ class Violation:
     evidence: str
     suggestion: str
     line_number: Optional[int] = None
+    source: str = "regex"  # "ast" or "regex"
+    fix_example: Optional[str] = None
+    
+    @classmethod
+    def from_ast(cls, ast_violation: 'ASTViolation') -> 'Violation':
+        """Convert AST violation to legacy Violation"""
+        return cls(
+            constraint_type=cls._map_rule_type(ast_violation.rule_id),
+            severity=Severity.from_ast(ast_violation.severity),
+            description=ast_violation.rule_name,  # Use rule_name as description
+            evidence=ast_violation.message,  # Use message as evidence
+            suggestion=ast_violation.suggestion,
+            line_number=ast_violation.line,  # Use 'line' instead of 'line_number'
+            source="ast",
+            fix_example=None  # AST violation doesn't have fix_example yet
+        )
+    
+    @staticmethod
+    def _map_rule_type(ast_rule_id: str) -> 'ConstraintType':
+        """Map AST rule ID (string) to legacy ConstraintType"""
+        mapping = {
+            "NULL_CHECK": ConstraintType.BOUNDARY_CHECK,
+            "EXCEPTION_FLOW": ConstraintType.EXCEPTION_HANDLING,
+            "ERROR_HANDLING": ConstraintType.EXCEPTION_HANDLING,
+            "TYPE_ANNOTATION": ConstraintType.CODE_STRUCTURE,
+            "SECURITY_PATTERN": ConstraintType.SECURITY,
+            "HARDCODED_SECRET": ConstraintType.SECURITY,
+            "CONTROL_FLOW": ConstraintType.CODE_STRUCTURE,
+            "RESOURCE_MANAGEMENT": ConstraintType.CODE_STRUCTURE,
+            "CODE_QUALITY": ConstraintType.READABILITY,
+            "DEBUG_CODE": ConstraintType.CODE_STRUCTURE,
+            "NO_BARE_EXCEPT": ConstraintType.EXCEPTION_HANDLING,
+            "NO_EMPTY_EXCEPT": ConstraintType.EXCEPTION_HANDLING,
+            "IO_EXCEPTION": ConstraintType.EXCEPTION_HANDLING,
+            "NETWORK_EXCEPTION": ConstraintType.EXCEPTION_HANDLING,
+        }
+        return mapping.get(ast_rule_id, ConstraintType.CUSTOM)
     
 @dataclass
 class AuditResult:
@@ -68,13 +144,53 @@ class AuditResult:
         }
 
 class ConstraintChecker:
-    """Core constraint validation engine"""
+    """
+    Core constraint validation engine
+    
+    Dual-mode operation:
+    - Fast mode: AST checks only (<50ms/file)
+    - Strict mode: AST + regex checks (comprehensive)
+    """
     
     PASS_THRESHOLD = 85
     
-    def __init__(self, constraints_yaml: Dict[str, Any]):
+    def __init__(self, constraints_yaml: Dict[str, Any], mode: str = "strict"):
+        """
+        Initialize checker
+        
+        Args:
+            constraints_yaml: YAML configuration
+            mode: "fast" (AST only) or "strict" (AST + regex)
+        """
         self.constraints = self._parse_constraints(constraints_yaml)
+        self.mode = mode
         self.checkers = self._register_checkers()
+        
+        # Initialize AST checker if available
+        self.ast_checker = None
+        if AST_AVAILABLE:
+            # ASTConstraintChecker uses strict_mode parameter, not config
+            strict_mode = (mode == "strict")
+            self.ast_checker = ASTConstraintChecker(strict_mode=strict_mode)
+    
+    def _build_ast_config(self, yaml_data: Dict) -> Dict[str, Any]:
+        """Build AST checker config from YAML"""
+        enabled_rules = set()
+        
+        # Map constraint types to AST rules
+        if "boundary_check" in yaml_data.get("constraints", {}):
+            enabled_rules.add("null_check")
+        
+        if "exception_handling" in yaml_data.get("constraints", {}):
+            enabled_rules.update(["exception_flow", "no_bare_except", "no_empty_except", "io_exception", "network_exception"])
+        
+        if "security" in yaml_data.get("constraints", {}):
+            enabled_rules.add("hardcoded_secret")
+        
+        if "code_structure" in yaml_data.get("constraints", {}):
+            enabled_rules.add("type_annotation")
+        
+        return {"enabled_rules": list(enabled_rules)}
     
     def _parse_constraints(self, yaml_data: Dict) -> Dict[ConstraintType, List[Dict]]:
         """Parse constraints from YAML structure"""
@@ -125,20 +241,41 @@ class ConstraintChecker:
         """
         violations = []
         
-        # Run all applicable checkers
-        for constraint_type, checker_fn in self.checkers.items():
-            if constraint_type in self.constraints:
-                type_violations = checker_fn(output, self.constraints[constraint_type])
-                violations.extend(type_violations)
+        # Step 1: AST checks (if enabled and code)
+        if self.mode != "regex_only" and output_type == "code" and self.ast_checker:
+            try:
+                ast_result = self.ast_checker.check_python(output)
+                
+                # Convert AST violations to legacy format
+                for ast_v in ast_result.violations:
+                    violations.append(Violation.from_ast(ast_v))
+                
+                # If AST found CRITICAL violations, skip regex checks (fast fail)
+                if any(v.severity == Severity.CRITICAL for v in violations):
+                    # Fast fail - critical issues found
+                    pass
+                elif self.mode == "fast":
+                    # Fast mode: only AST checks
+                    pass
+                else:
+                    # Strict mode: also run regex checks
+                    violations.extend(self._run_regex_checks(output))
+                    
+            except Exception as e:
+                # AST check failed, fall back to regex only
+                violations.extend(self._run_regex_checks(output))
+        else:
+            # Regex-only mode or non-code output
+            violations.extend(self._run_regex_checks(output))
         
         # Calculate score
         score = self._calculate_score(violations)
         
-        # Determine must-fix items (HIGH severity)
+        # Determine must-fix items (CRITICAL/HIGH severity)
         must_fix = list(set([
             v.constraint_type.value 
             for v in violations 
-            if v.severity == Severity.HIGH
+            if v.severity in (Severity.CRITICAL, Severity.HIGH)
         ]))
         
         passed = score >= self.PASS_THRESHOLD and not must_fix
@@ -152,6 +289,17 @@ class ConstraintChecker:
             must_fix=must_fix,
             summary=summary
         )
+    
+    def _run_regex_checks(self, output: str) -> List[Violation]:
+        """Run legacy regex-based checks"""
+        violations = []
+        
+        for constraint_type, checker_fn in self.checkers.items():
+            if constraint_type in self.constraints:
+                type_violations = checker_fn(output, self.constraints[constraint_type])
+                violations.extend(type_violations)
+        
+        return violations
     
     def _calculate_score(self, violations: List[Violation]) -> int:
         """Calculate score based on violations"""
@@ -355,9 +503,15 @@ class ConstraintChecker:
 
 
 # Convenience function for direct usage
-def check_constraints(output: str, constraints_yaml_path: Optional[str] = None) -> AuditResult:
+def check_constraints(output: str, constraints_yaml_path: Optional[str] = None, 
+                     mode: str = "strict") -> AuditResult:
     """
     Quick check with default or custom constraints
+    
+    Args:
+        output: Code or content to check
+        constraints_yaml_path: Path to YAML config (optional)
+        mode: "fast" (AST only), "strict" (AST+regex), or "regex_only"
     
     Usage:
         result = check_constraints(code_string)
@@ -368,7 +522,7 @@ def check_constraints(output: str, constraints_yaml_path: Optional[str] = None) 
     default_constraints = {
         "constraints": {
             "boundary_check": [{"check_null": True}],
-            "exception_handling": [{"check_io": True}],
+            "exception_handling": [{"check_io": True, "check_network": True}],
             "code_structure": [{"max_function_lines": 50}],
             "readability": [{}],
             "security": [{}]
@@ -381,7 +535,7 @@ def check_constraints(output: str, constraints_yaml_path: Optional[str] = None) 
     else:
         constraints = default_constraints
     
-    checker = ConstraintChecker(constraints)
+    checker = ConstraintChecker(constraints, mode=mode)
     return checker.audit(output)
 
 

@@ -1,0 +1,93 @@
+# BMAD-EVO AST Constraint Template: API Service
+# 适用于：REST API、Web 服务、HTTP 端点
+# AST 模式：零误报，只检查真实代码
+
+ast_rules:
+  enabled:
+    - null_check           # 输入参数验证
+    - exception_flow       # 异常流完整性
+    - no_bare_except       # 禁止裸 except
+    - io_exception         # IO 操作异常处理
+    - network_exception    # 外部 API 调用异常处理
+    - hardcoded_secret     # 硬编码密钥检测
+    - type_annotation      # 类型注解（API 文档自动生成需要）
+  
+  disabled: []
+
+# API 服务特有配置
+api_specific:
+  # 输入验证要求
+  input_validation:
+    required: true
+    description: "所有 API 端点必须验证输入参数"
+    
+  # 响应格式检查
+  response_format:
+    required: true
+    description: "API 响应必须符合统一格式（status + data/error）"
+  
+  # 认证检查
+  authentication:
+    required: true
+    description: "敏感端点必须有认证机制"
+  
+  # 限流检查
+  rate_limiting:
+    recommended: true
+    description: "公开端点建议实现限流"
+
+# 严重性调整
+severity_overrides:
+  # API 输入验证是安全关键
+  null_check: high
+  
+  # 硬编码密钥零容忍
+  hardcoded_secret: critical
+  
+  # 类型注解对 API 文档很重要
+  type_annotation: medium
+
+# 必须手动检查的项目
+manual_checks:
+  - authentication: "端点必须有适当的认证机制"
+  - authorization: "检查用户权限"
+  - input_sanitization: "防止 SQL 注入、XSS 等攻击"
+  - rate_limiting: "实现请求限流"
+  - error_handling: "统一的错误响应格式"
+  - logging: "记录所有 API 请求（审计需要）"
+  - cors: "正确配置 CORS 策略"
+
+# 正则检查集成
+regex_fallback:
+  enabled: true
+  
+  patterns:
+    # API 端点装饰器
+    - pattern: "@app\\.(route|get|post|put|delete)"
+      must_exist: true
+      severity: high
+      description: "必须有 API 端点定义"
+    
+    # JSON 响应
+    - pattern: "jsonify\\(|JSON\\.dumps\\("
+      must_exist: true
+      severity: medium
+      description: "API 应该返回 JSON 格式"
+    
+    # 数据库操作异常处理
+    - pattern: "(execute|query|fetch)"
+      must_exist: false
+      severity: high
+      description: "数据库操作必须有异常处理"
+      requires_exception_handling: true
+
+# 质量阈值
+thresholds:
+  pass_score: 85
+  
+  blocking_rules:
+    - hardcoded_secret      # 硬编码密钥直接阻断
+    - no_empty_except       # 空异常处理器直接阻断
+  
+  recommended_rules:
+    - type_annotation

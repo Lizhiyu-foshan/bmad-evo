@@ -1,0 +1,83 @@
+# BMAD-EVO AST Constraint Template: Cron Job / Scheduled Task
+# 适用于：定时任务、调度系统、后台服务
+# AST 模式：零误报，只检查真实代码（忽略字符串/注释中的模式）
+
+# AST 检查规则配置
+ast_rules:
+  enabled:
+    - null_check           # 空值检查
+    - exception_flow       # 异常流完整性
+    - no_bare_except       # 禁止裸 except
+    - no_empty_except      # 禁止空异常处理器
+    - io_exception         # IO 操作异常处理
+    - network_exception    # 网络请求异常处理
+    - hardcoded_secret     # 硬编码密钥检测
+    - type_annotation      # 类型注解（低优先级）
+  
+  disabled:
+    - control_flow         # 控制流完整性（待实现）
+    - resource_management  # 资源管理（待实现）
+
+# 严重性调整（针对特定场景）
+severity_overrides:
+  # 定时任务中，空值检查特别重要
+  null_check: high
+  
+  # 网络请求异常处理在定时任务中是强制要求
+  network_exception: high
+  
+  # 硬编码密钥零容忍
+  hardcoded_secret: critical
+  
+  # 类型注解可以宽松一些
+  type_annotation: low
+
+# 豁免规则（允许 # noqa 跳过）
+noqa_allowed:
+  - type_annotation  # 允许快速原型时代码跳过类型注解检查
+
+# 必须手动检查的项目（AST 无法自动检测）
+manual_checks:
+  - idempotent: "任务必须是幂等的（多次执行无副作用）"
+  - timeout_handling: "必须设置超时机制，防止任务挂起"
+  - logging_required: "必须有完整的日志记录（开始、结束、异常）"
+  - state_persistence: "状态必须持久化，支持断点续传"
+
+# 与正则检查的集成配置
+regex_fallback:
+  # 对于 AST 无法检测的模式，使用正则检查
+  enabled: true
+  
+  # 定时任务特有检查
+  patterns:
+    - pattern: "record_message_received|is_message_received"
+      must_exist: true
+      severity: high
+      description: "飞书消息去重必须使用指纹记录机制"
+      suggestion: "参考 feishu_receive_dedup 模块"
+    
+    - pattern: "sessions_spawn|agentTurn"
+      must_exist: false
+      severity: medium
+      description: "避免在子 Agent 中嵌套创建子 Agent（可能导致递归）"
+      suggestion: "使用 systemEvent 或直接执行替代"
+    
+    - pattern: "try:\\s*\\n.*except.*:\\s*\\n.*pass"
+      must_exist: false
+      severity: high
+      description: "禁止空 except-pass（静默吞掉异常）"
+      suggestion: "至少记录日志或重新抛出"
+
+# 质量阈值
+thresholds:
+  # 通过率阈值
+  pass_score: 85
+  
+  # 阻断规则（即使分数够高，有以下问题也阻断）
+  blocking_rules:
+    - hardcoded_secret      # 硬编码密钥直接阻断
+    - no_empty_except       # 空异常处理器直接阻断
+  
+  # 建议修复（不阻断，但影响质量分）
+  recommended_rules:
+    - type_annotation       # 类型注解只是建议

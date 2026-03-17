@@ -1,0 +1,158 @@
+#!/bin/bash
+# BMAD-EVO 约束检查脚本
+# 在 Git 提交前自动检查约束合规性
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+CONSTRAINTS_FILE="$SCRIPT_DIR/PROJECT_CONSTRAINTS.md"
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo "🔍 BMAD-EVO 约束检查..."
+echo "================================"
+
+ERRORS=0
+WARNINGS=0
+
+# 检查 1: 约束文件是否存在
+echo -n "检查约束文件..."
+if [ -f "$CONSTRAINTS_FILE" ]; then
+    echo -e "${GREEN}✓ 存在${NC}"
+else
+    echo -e "${RED}✗ 缺失${NC}"
+    echo "  错误：PROJECT_CONSTRAINTS.md 文件不存在"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# 检查 2: .bmad 目录结构完整性
+echo -n "检查 .bmad 目录结构..."
+REQUIRED_DIRS=("checkpoints" "decisions" "logs")
+MISSING_DIRS=()
+
+for dir in "${REQUIRED_DIRS[@]}"; do
+    if [ ! -d "$SCRIPT_DIR/$dir" ]; then
+        MISSING_DIRS+=("$dir")
+    fi
+done
+
+if [ ${#MISSING_DIRS[@]} -eq 0 ]; then
+    echo -e "${GREEN}✓ 完整${NC}"
+else
+    echo -e "${YELLOW}⚠ 缺失目录：${MISSING_DIRS[*]}${NC}"
+    WARNINGS=$((WARNINGS + 1))
+fi
+
+# 检查 3: 检查是否有未记录的决策（decisions 目录应为空或有文件）
+DECISION_COUNT=$(find "$SCRIPT_DIR/decisions" -name "*.md" 2>/dev/null | wc -l)
+echo "决策记录数量：$DECISION_COUNT"
+
+# 检查 4: 检查代码中的硬编码路径
+echo -n "检查硬编码路径..."
+HARDCODED_PATHS=$(grep -r "/root/.openclaw" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/agents" 2>/dev/null | grep -v "PROJECT_CONSTRAINTS.md" | wc -l || echo "0")
+if [ "$HARDCODED_PATHS" -eq 0 ]; then
+    echo -e "${GREEN}✓ 未发现${NC}"
+else
+    echo -e "${YELLOW}⚠ 发现 $HARDCODED_PATHS 处硬编码路径${NC}"
+    echo "  建议：使用环境变量或配置文件"
+    WARNINGS=$((WARNINGS + 1))
+fi
+
+# 检查 5: 检查是否有 eval 调用
+echo -n "检查 eval 调用..."
+EVAL_COUNT=$(grep -r "eval " "$PROJECT_ROOT/lib" "$PROJECT_ROOT/agents" 2>/dev/null | wc -l || echo "0")
+if [ "$EVAL_COUNT" -eq 0 ]; then
+    echo -e "${GREEN}✓ 未发现${NC}"
+else
+    echo -e "${RED}✗ 发现 $EVAL_COUNT 处 eval 调用${NC}"
+    echo "  错误：违反安全约束，禁止使用 eval"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# 检查 6: 检查脚本超时设置
+echo -n "检查脚本超时设置..."
+TIMEOUT_MISSING=0
+while IFS= read -r script; do
+    if [ -f "$script" ]; then
+        if ! grep -q "timeout" "$script" && ! grep -q "timeoutMs" "$script"; then
+            TIMEOUT_MISSING=$((TIMEOUT_MISSING + 1))
+        fi
+    fi
+done < <(find "$PROJECT_ROOT" -maxdepth 2 -name "*.sh" -type f 2>/dev/null)
+
+if [ "$TIMEOUT_MISSING" -eq 0 ]; then
+    echo -e "${GREEN}✓ 已设置${NC}"
+else
+    echo -e "${YELLOW}⚠ $TIMEOUT_MISSING 个脚本缺少超时设置${NC}"
+    WARNINGS=$((WARNINGS + 1))
+fi
+
+# 检查 7: 检查敏感信息泄露风险
+echo -n "检查敏感信息..."
+SENSITIVE_PATTERNS=("api_key" "apikey" "secret" "password" "token")
+SENSITIVE_FOUND=0
+
+for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+    if grep -ri "$pattern" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/agents" 2>/dev/null | grep -v "PROJECT_CONSTRAINTS.md" | grep -v ".git" > /dev/null; then
+        SENSITIVE_FOUND=$((SENSITIVE_FOUND + 1))
+    fi
+done
+
+if [ "$SENSITIVE_FOUND" -eq 0 ]; then
+    echo -e "${GREEN}✓ 未发现明显泄露${NC}"
+else
+    echo -e "${YELLOW}⚠ 发现 $SENSITIVE_FOUND 处潜在敏感信息${NC}"
+    echo "  警告：请确认是否记录了敏感信息"
+    WARNINGS=$((WARNINGS + 1))
+fi
+
+# 检查 8: 检查是否有 trash 替代 rm
+echo -n "检查删除操作安全性..."
+RM_COUNT=$(grep -r " rm " "$PROJECT_ROOT/lib" "$PROJECT_ROOT/agents" "$PROJECT_ROOT/scripts" 2>/dev/null | grep -v "trash" | wc -l || echo "0")
+if [ "$RM_COUNT" -eq 0 ]; then
+    echo -e "${GREEN}✓ 安全${NC}"
+else
+    echo -e "${YELLOW}⚠ 发现 $RM_COUNT 处使用 rm 而非 trash${NC}"
+    echo "  建议：使用 trash 以保证可恢复性"
+    WARNINGS=$((WARNINGS + 1))
+fi
+
+echo ""
+echo "================================"
+echo "检查结果汇总："
+echo "  错误：$ERRORS"
+echo "  警告：$WARNINGS"
+echo ""
+
+if [ "$ERRORS" -gt 0 ]; then
+    echo -e "${RED}❌ 约束检查失败：存在 $ERRORS 个错误${NC}"
+    echo ""
+    echo "请在提交前修复以下问题："
+    echo "  1. 确保 PROJECT_CONSTRAINTS.md 文件存在"
+    echo "  2. 移除所有 eval 调用"
+    echo ""
+    exit 1
+elif [ "$WARNINGS" -gt 0 ]; then
+    echo -e "${YELLOW}⚠️  约束检查通过（有警告）${NC}"
+    echo ""
+    echo "建议改进项："
+    echo "  - 修复硬编码路径"
+    echo "  - 添加脚本超时设置"
+    echo "  - 检查敏感信息"
+    echo "  - 使用 trash 替代 rm"
+    echo ""
+    echo "是否继续提交？(y/n): "
+    read -r response
+    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+        echo "提交已取消"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}✅ 约束检查通过！${NC}"
+    exit 0
+fi

@@ -1,0 +1,22 @@
+{
+  "phase": "test_phase",
+  "decision": "manual_fix",
+  "reason": "CI/CD automated decision: manual_fix",
+  "timestamp": "2026-03-16T12:06:02.211938",
+  "audit_score": 75,
+  "risk_accepted": false,
+  "max_attempts": 3,
+  "report_path": "/tmp/test-report.md",
+  "violations_count": 1,
+  "violations_by_severity": {
+    "high": 1,
+    "medium": 0,
+    "low": 0
+  },
+  "must_fix_items": [
+    "Test must-fix item"
+  ],
+  "constraint_types_violated": [
+    "代码结构"
+  ]
+}
