@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from constraint_auditor import ConstraintAuditor
 from phase_gateway import PhaseGateway
 from decision_interface import DecisionInterface
+from agent_executor import AgentExecutor, AgentResult
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -52,20 +53,16 @@ class WorkflowOrchestrator:
         self.auditor = ConstraintAuditor(project_path)
         self.decision_interface = DecisionInterface(project_path, interactive)
         
-        # Phase execution handlers (can be customized)
-        self.phase_handlers = {
-            "analyst": self._execute_analyst,
-            "pm": self._execute_pm,
-            "architect": self._execute_architect,
-            "ux": self._execute_ux,
-            "development": self._execute_development,
-            "qa": self._execute_qa,
-            "deployment": self._execute_deployment
-        }
+        # Initialize Agent Executor (NEW)
+        execution_mode = config.get('execution_mode', 'local') if config else 'local'
+        self.agent_executor = AgentExecutor(str(project_path), mode=execution_mode)
         
         # Configuration
         self.config = config or {}
         self.max_retries = self.config.get('max_retries', 3)
+        
+        # Track phase outputs for context passing
+        self.phase_outputs: Dict[str, str] = {}
     
     def run_workflow(self, phases: Optional[List[str]] = None, strict: bool = True, resume: bool = False) -> bool:
         """
@@ -252,18 +249,42 @@ class WorkflowOrchestrator:
         return False
     
     def _execute_phase(self, phase: str) -> Optional[str]:
-        """Execute phase and return output"""
-        handler = self.phase_handlers.get(phase)
-        if handler:
-            return handler()
+        """Execute phase using Agent Executor"""
+        # Build context from previous phases
+        context = self._build_context(phase)
         
-        # Default: look for output file
-        output_file = self.project_path / ".bmad" / f"{phase}-output.txt"
-        if output_file.exists():
-            return output_file.read_text(encoding='utf-8')
+        # Execute agent
+        result = self.agent_executor.execute(phase, context)
         
-        print(f"⚠️  No handler for phase {phase} and no output file found")
-        return None
+        if not result.success:
+            logger.error(f"Agent execution failed: {result.error}")
+            return None
+        
+        # Store output for next phases
+        self.phase_outputs[phase] = result.output
+        
+        # Log execution info
+        logger.info(f"Agent {phase} completed in {result.execution_time:.2f}s using {result.model_used}")
+        
+        return result.output
+    
+    def _build_context(self, phase: str) -> str:
+        """Build context from previous phase outputs"""
+        context_parts = []
+        
+        # Define phase dependencies
+        phase_order = ["analyst", "pm", "architect", "ux", "development", "qa", "deployment"]
+        
+        if phase in phase_order:
+            idx = phase_order.index(phase)
+            # Include outputs from all previous phases
+            for prev_phase in phase_order[:idx]:
+                if prev_phase in self.phase_outputs:
+                    context_parts.append(f"## {prev_phase.upper()} 阶段输出\n")
+                    context_parts.append(self.phase_outputs[prev_phase])
+                    context_parts.append("\n---\n")
+        
+        return "\n".join(context_parts) if context_parts else ""
     
     def _save_phase_output(self, phase: str, output: str) -> str:
         """Save phase output to file"""
@@ -271,57 +292,13 @@ class WorkflowOrchestrator:
         output_file.write_text(output, encoding='utf-8')
         return str(output_file)
     
-    # Phase-specific executors (placeholders for actual implementation)
-    def _execute_analyst(self) -> Optional[str]:
-        """Execute analyst phase"""
-        # In real implementation, would spawn agent
-        return self._read_or_prompt("analyst")
-    
-    def _execute_pm(self) -> Optional[str]:
-        return self._read_or_prompt("pm")
-    
-    def _execute_architect(self) -> Optional[str]:
-        return self._read_or_prompt("architect")
-    
-    def _execute_ux(self) -> Optional[str]:
-        return self._read_or_prompt("ux")
-    
-    def _execute_development(self) -> Optional[str]:
-        return self._read_or_prompt("development")
-    
-    def _execute_qa(self) -> Optional[str]:
-        return self._read_or_prompt("qa")
-    
-    def _execute_deployment(self) -> Optional[str]:
-        return self._read_or_prompt("deployment")
-    
-    def _read_or_prompt(self, phase: str) -> Optional[str]:
-        """Read output file or prompt user"""
-        output_file = self.project_path / ".bmad" / f"{phase}-output.txt"
-        if output_file.exists():
-            return output_file.read_text(encoding='utf-8')
-        
-        if self.interactive:
-            print(f"\n⚠️  Please provide output for phase '{phase}'")
-            print(f"   Option 1: Create file: {output_file}")
-            print(f"   Option 2: Enter content below (Ctrl+D when done):")
-            
-            try:
-                content = sys.stdin.read()
-                if content.strip():
-                    output_file.write_text(content, encoding='utf-8')
-                    return content
-            except EOFError:
-                pass
-        
-        return None
-    
     def get_workflow_status(self) -> Dict[str, Any]:
         """Get current workflow status"""
         return {
             "gateway": self.gateway.get_phase_status(),
             "decisions": len(self.decision_interface.get_decision_history(limit=100)),
-            "audits": len(self.auditor.report_generator.get_audit_history(limit=100))
+            "audits": len(self.auditor.report_generator.get_audit_history(limit=100)),
+            "executed_agents": list(self.phase_outputs.keys())
         }
     
     def _save_checkpoint(self, phase: str):
@@ -392,11 +369,15 @@ Examples:
     parser.add_argument("--no-interactive", action="store_true", help="Non-interactive mode")
     parser.add_argument("--phases", nargs="+", help="Specific phases to run")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
+    parser.add_argument("--mode", default="local", choices=["openclaw", "local"],
+                        help="Agent execution mode (default: local)")
     
     subparsers = parser.add_subparsers(dest="command", help="Commands")
     
     # Run command
     run_parser = subparsers.add_parser("run", help="Run workflow")
+    run_parser.add_argument("--mode", default="local", choices=["openclaw", "local"],
+                            help="Agent execution mode")
     
     # Status command
     subparsers.add_parser("status", help="Show workflow status")
@@ -404,9 +385,14 @@ Examples:
     args = parser.parse_args()
     
     if args.command == "run" or args.command is None:
+        config = {
+            'execution_mode': args.mode,
+            'max_retries': 3
+        }
         orchestrator = WorkflowOrchestrator(
             args.project,
-            interactive=not args.no_interactive
+            interactive=not args.no_interactive,
+            config=config
         )
         
         success = orchestrator.run_workflow(

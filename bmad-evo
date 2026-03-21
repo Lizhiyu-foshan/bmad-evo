@@ -41,6 +41,7 @@ COMMANDS:
                               --strict         严格模式（审计必需）
                               --phases a b c   指定阶段
                               --ci             CI模式（非交互）
+                              --mode           执行模式 (openclaw|local)
     workflow status           查看工作流状态
 
   Decision Records:
