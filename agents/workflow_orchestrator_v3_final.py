@@ -337,46 +337,31 @@ class WorkflowOrchestratorV3Final:
     
     def _perform_audit(self, role_name: str, output: str) -> Dict:
         """【强制审计】自动触发"""
-        audit_result = self.auditor.audit_phase(
-            phase_name=role_name,
-            phase_output=output,
-            project_path=str(self.project_path)
+        audit_result = self.auditor.audit(
+            output=output,
+            phase=role_name
         )
         
         # 统一返回格式
         violations = []
-        for v in audit_result.get('constraint_violations', []):
+        for v in audit_result.violations:
             violations.append({
-                'severity': v.get('severity', 'MEDIUM'),
-                'message': v.get('message', ''),
-                'rule': v.get('rule', 'unknown')
-            })
-        for v in audit_result.get('ast_violations', []):
-            violations.append({
-                'severity': v.get('severity', 'MEDIUM'),
-                'message': v.get('message', ''),
-                'rule': 'ast_check'
+                'severity': v.severity.value if hasattr(v.severity, 'value') else str(v.severity),
+                'message': v.description,
+                'rule': v.constraint_type.value if hasattr(v.constraint_type, 'value') else str(v.constraint_type)
             })
         
         return {
             'violations': violations,
+            'score': audit_result.score,
+            'passed': audit_result.passed,
             'raw_result': audit_result
         }
     
     def _calculate_audit_score(self, audit: Dict) -> int:
         """计算审计分数"""
-        base_score = 100
-        for v in audit.get('violations', []):
-            sev = v.get('severity', 'MEDIUM')
-            if sev == 'CRITICAL':
-                base_score -= 20
-            elif sev == 'HIGH':
-                base_score -= 10
-            elif sev == 'MEDIUM':
-                base_score -= 5
-            else:
-                base_score -= 2
-        return max(0, base_score)
+        # 直接使用 audit 返回的 score
+        return audit.get('score', 0)
     
     def _user_decision(self, role: RoleDefinition, audit: Dict, score: int) -> str:
         """用户决策"""
