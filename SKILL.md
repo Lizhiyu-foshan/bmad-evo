@@ -17,6 +17,7 @@ description: BMAD-EVO 进化版多Agent开发框架。在BMAD基础上增加约�
 | **Phase 2** | 🚧 阶段流转拦截 | ✅ 已完成 |
 | | 👤 用户决策界面 | ✅ 已完成 |
 | | 🔄 工作流编排 | ✅ 已完成 |
+| | 🤖 **Agent 执行层** | ✅ **已完成** |
 
 ---
 
@@ -29,7 +30,12 @@ description: BMAD-EVO 进化版多Agent开发框架。在BMAD基础上增加约�
     ↓
 【阶段网关】启动阶段 N
     ↓
-阶段 N 执行（K2.5）
+【Agent 执行】调用对应模型角色
+    ├── analyst (K2.5) → 需求分析
+    ├── pm (GLM-5) → 产品规划  
+    ├── architect (K2.5) → 架构设计
+    ├── development (K2.5) → 编码开发
+    └── qa (Qwen3.5) → 测试审查
     ↓
 【强制审计】自动触发
     ├── 通过（≥85分）→ 【网关】进入阶段 N+1
@@ -75,6 +81,12 @@ bmad-evo run --strict --phases development qa
 
 # CI/CD 非交互模式
 bmad-evo run --strict --ci
+
+# 本地调试模式（使用模拟输出）
+bmad-evo run --strict --mode local
+
+# 真实模型调用模式（需 OpenClaw Gateway 运行）
+bmad-evo run --strict --mode openclaw
 ```
 
 ### 3. 独立审计（调试用）
@@ -101,7 +113,7 @@ bmad-evo decision summary
 | 命令 | 说明 |
 |------|------|
 | `bmad-evo init [--template]` | 初始化项目 |
-| `bmad-evo run [--strict] [--phases] [--ci]` | 运行工作流 |
+| `bmad-evo run [--strict] [--phases] [--ci] [--mode]` | 运行工作流（`--mode`: openclaw/local）|
 | `bmad-evo workflow status` | 查看工作流状态 |
 
 ### 审计命令
@@ -126,7 +138,51 @@ bmad-evo decision summary
 
 ---
 
-## 约束检查机制
+## Agent 执行层
+
+BMAD-EVO v2.0 内置 **7 个预定义角色**，每个角色对应不同的模型和职责：
+
+| 角色 | 模型 | 职责 | 系统提示词 |
+|------|------|------|-----------|
+| `analyst` | K2.5 | 需求分析师 | 分析需求、提取关键信息、识别风险 |
+| `pm` | GLM-5 | 产品经理 | 制定规划、设计优先级、里程碑 |
+| `architect` | K2.5 | 架构师 | 系统设计、技术选型、模块边界 |
+| `ux` | GLM-5 | UX设计师 | 交互流程、界面布局 |
+| `development` | K2.5 | 开发工程师 | 编码实现、遵循约束规范 |
+| `qa` | Qwen3.5 | QA工程师 | 测试设计、代码审查 |
+| `deployment` | K2.5 | 运维工程师 | 部署方案、监控配置 |
+
+### 上下文传递
+
+各阶段自动传递上下文，形成完整的工作流：
+
+```
+analyst 输出 → pm 输入 → architect 输入 → development 输入 → qa 输入
+```
+
+### 执行模式
+
+| 模式 | 说明 | 使用场景 |
+|------|------|---------|
+| `local` | 本地模拟模式，使用预置输出或模拟响应 | 调试、测试 |
+| `openclaw` | 真实模型调用，通过 `openclaw sessions spawn` | 生产环境 |
+
+### 自定义配置
+
+创建 `.bmad/agent-config.json` 自定义角色配置：
+
+```json
+{
+  "agents": {
+    "development": {
+      "name": "development",
+      "model": "kimi-coding/k2p5",
+      "timeout": 600,
+      "system_prompt": "自定义系统提示词..."
+    }
+  }
+}
+```
 
 ### 审计维度
 
@@ -261,7 +317,8 @@ BMAD-EVO v2.0
 │
 ├── lib/
 │   ├── constraint_checker.py      # 检查引擎
-│   └── audit_report.py            # 报告生成
+│   ├── audit_report.py            # 报告生成
+│   └── agent_executor.py          # Agent 执行层 ⭐ 新增
 │
 ├── templates/constraints/
 │   ├── cron-job.yaml              # 定时任务模板
@@ -278,7 +335,7 @@ BMAD-EVO v2.0
 |------|------|
 | BMAD | 多Agent串行协作 |
 | BMAD-EVO v1.0 | BMAD + 约束驱动（建议） |
-| **BMAD-EVO v2.0** | BMAD + **强制审计** + **阶段拦截** + **用户决策** |
+| BMAD-EVO v2.0 | BMAD + **强制审计** + **阶段拦截** + **用户决策** + **Agent执行层** |
 
 ---
 
@@ -286,6 +343,7 @@ BMAD-EVO v2.0
 
 - **v2.0 Phase 1** (2026-03-16): 强制约束审计、审计报告、约束模板
 - **v2.0 Phase 2** (2026-03-16): 阶段网关、用户决策、工作流编排
+- **v2.0 Phase 3** (2026-03-21): **Agent 执行层** - 7个预定义角色、多模型调用、上下文传递
 
 ---
 
