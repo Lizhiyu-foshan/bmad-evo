@@ -8,9 +8,13 @@
 
 ## 核心模块
 
-总代码行数：1055 行
+总代码行数：1255 行
 
-### phase_gateway.py (380 行)
+**文件位置**: 所有核心模块位于 `agents/` 目录下（非 `lib/`）
+
+### phase_gateway.py (431 行)
+
+**位置**: `agents/phase_gateway.py`
 
 **职责**: 阶段流转拦截与状态管理
 
@@ -22,7 +26,9 @@
 - 状态持久化 (JSON)
 - 错误恢复 (损坏状态自动备份)
 
-### decision_interface.py (328 行)
+### decision_interface.py (394 行)
+
+**位置**: `agents/decision_interface.py`
 
 **职责**: 交互式用户决策界面
 
@@ -33,7 +39,9 @@
 - 决策记录持久化
 - 决策历史查询
 
-### workflow_orchestrator.py (347 行)
+### workflow_orchestrator.py (430 行)
+
+**位置**: `agents/workflow_orchestrator.py`
 
 **职责**: 端到端工作流编排
 
@@ -61,3 +69,12 @@
 4. 配置文件支持 (YAML/JSON)
 5. Web UI 界面 (可选)
 6. CI/CD 集成测试
+
+---
+
+## 更新记录
+
+**2026-03-21**: 修正文件路径和行数
+- 文件位置：`lib/` → `agents/`
+- 总行数：1055 → 1255 行
+- 各模块行数更新为实际统计值
