@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 测试报告（临时）
+audit-report-phase2.json
+development-report-phase2.json
+test-report-phase2.json
+
+# 开发过程中的旧版本（已合并到v3_final）
+agents/workflow_orchestrator_v3.py
+agents/workflow_orchestrator_v3_complete.py
+
+# 临时文档
+docs/V3_WORKFLOW_COMPARISON.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
