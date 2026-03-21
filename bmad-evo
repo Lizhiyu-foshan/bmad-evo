@@ -9,6 +9,7 @@ AUDITOR="$SCRIPT_DIR/agents/constraint_auditor.py"
 GATEWAY="$SCRIPT_DIR/agents/phase_gateway.py"
 DECISION="$SCRIPT_DIR/agents/decision_interface.py"
 WORKFLOW="$SCRIPT_DIR/agents/workflow_orchestrator.py"
+WORKFLOW_V3="$SCRIPT_DIR/agents/workflow_orchestrator_v3.py"
 
 show_help() {
     cat << 'EOF'
@@ -36,13 +37,20 @@ COMMANDS:
     phase decision <name>     用户决策
                               --choice manual|relax|force|abort
 
-  Workflow (v2.0):
-    run                       运行完整工作流
+  Workflow (v2.0 - Fixed Roles):
+    run                       运行完整工作流（固定角色）
                               --strict         严格模式（审计必需）
                               --phases a b c   指定阶段
                               --ci             CI模式（非交互）
                               --mode           执行模式 (openclaw|local)
     workflow status           查看工作流状态
+
+  Workflow (v3.0 - Dynamic Roles):
+    run-v3 <task>             运行动态角色工作流
+                              --strict         严格模式
+                              --timeout <n>    每个角色超时
+                              --max-retries <n> 最大重试次数
+                              示例: bmad-evo run-v3 "开发用户认证系统"
 
   Decision Records:
     decision history          查看决策历史
@@ -194,7 +202,14 @@ DEFAULT
         esac
         ;;
     
-    # Workflow commands
+    # Workflow v3.0 commands (Dynamic Roles)
+    run-v3)
+        shift
+        $PYTHON_CMD "$WORKFLOW_V3" --project . run "$@"
+        exit $?
+        ;;
+    
+    # Workflow v2.0 commands (Fixed Roles)
     run)
         shift
         $PYTHON_CMD "$WORKFLOW" --project . run "$@"
