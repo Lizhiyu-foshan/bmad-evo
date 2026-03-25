@@ -305,8 +305,13 @@ class AgentExecutor:
             )
             
             if result.returncode != 0:
-                logger.warning("OpenClaw CLI not found, falling back to local mode")
-                return self._execute_local(config, prompt)
+                raise RuntimeError(
+                    "OpenClaw CLI not found. Cannot execute agent in 'openclaw' mode.\n"
+                    "Please ensure:\n"
+                    "1. OpenClaw is installed and 'openclaw' command is in PATH\n"
+                    "2. Or explicitly use mode='local' for testing (not recommended for production)\n"
+                    "3. Or implement a real AI client (e.g., direct API call) instead of mock"
+                )
             
             # 使用 openclaw sessions spawn
             # 注意：实际执行需要 OpenClaw Gateway 运行
@@ -366,6 +371,9 @@ class AgentExecutor:
                 execution_time=execution_time,
                 error=f"Timeout after {config.timeout}s"
             )
+        except RuntimeError:
+            # RuntimeError 是配置错误，应该传播而不是封装
+            raise
         except Exception as e:
             execution_time = time.time() - start_time
             logger.error(f"OpenClaw execution error: {e}")
@@ -379,55 +387,80 @@ class AgentExecutor:
     
     def _execute_local(self, config: AgentConfig, prompt: str) -> AgentResult:
         """
-        本地模式执行（模拟/调试用途）
-        实际生产环境应使用 OpenClaw 模式
+        本地模式执行（仅用于测试或作为真实API调用的模板）
+        
+        WARNING: 此方法不再生成模拟数据。要实现真实的本地执行，请：
+        1. 使用 OpenClaw 模式（推荐）
+        2. 或直接调用模型API（需实现）
+        3. 或设置 BMAD_EVO_USE_MOCK=1 环境变量（仅测试，会生成警告日志）
         """
         import time
+        import os
         start_time = time.time()
         
-        logger.warning("Using LOCAL mode - this is for testing only!")
-        
-        # 检查是否有模拟输出
-        mock_file = self.project_path / ".bmad" / f"{config.name}-output.txt"
-        if mock_file.exists():
-            output = mock_file.read_text(encoding='utf-8')
-            execution_time = time.time() - start_time
+        # 检查是否显式启用mock模式（仅测试用途）
+        if os.environ.get('BMAD_EVO_USE_MOCK') == '1':
+            logger.warning("⚠️  BMAD_EVO_USE_MOCK=1 - Using mock output for testing only!")
             
-            logger.info(f"Using mock output from: {mock_file}")
+            # 检查是否有预定义的模拟输出文件
+            mock_file = self.project_path / ".bmad" / f"{config.name}-output.txt"
+            if mock_file.exists():
+                output = mock_file.read_text(encoding='utf-8')
+                execution_time = time.time() - start_time
+                
+                logger.info(f"Using mock output from: {mock_file}")
+                
+                return AgentResult(
+                    success=True,
+                    output=output,
+                    model_used=f"{config.model}(MOCK-FOR-TESTING)",
+                    execution_time=execution_time
+                )
             
-            return AgentResult(
-                success=True,
-                output=output,
-                model_used=f"{config.model}(mock)",
-                execution_time=execution_time
-            )
-        
-        # 生成模拟响应
-        output = f"""# {config.description} - 模拟输出
+            # 没有预定义文件时，生成带警告的mock输出
+            output = f"""# MOCK OUTPUT - FOR TESTING ONLY
 
-## 阶段：{config.name}
-模型：{config.model}
+## ⚠️  WARNING
+This is a MOCK output generated for testing purposes only.
+DO NOT use this in production.
 
-这是本地模拟模式下的输出。在实际运行中，这里会包含：
-1. 基于提示词的真实模型响应
-2. 结构化的阶段输出
-3. 符合约束的代码/文档
+## Role: {config.description}
+## Model: {config.model}
+## Timestamp: {datetime.now().isoformat()}
 
-## 提示词摘要
+### Prompt Summary (first 200 chars):
 ```
 {prompt[:200]}...
 ```
 
-*注：要使用真实的 Agent 调用，请确保 OpenClaw Gateway 正在运行。*
+### To get real AI output:
+1. Use mode='openclaw' with OpenClaw Gateway running
+2. Or implement direct API call in _execute_local()
+3. Or set BMAD_EVO_USE_MOCK=1 for testing (current)
+
+---
+*This is not real AI output. This is a placeholder for testing.*
 """
+            
+            execution_time = time.time() - start_time
+            
+            return AgentResult(
+                success=True,
+                output=output,
+                model_used=f"{config.model}(MOCK-FOR-TESTING)",
+                execution_time=execution_time
+            )
         
-        execution_time = time.time() - start_time
-        
-        return AgentResult(
-            success=True,
-            output=output,
-            model_used=f"{config.model}(mock)",
-            execution_time=execution_time
+        # 默认情况：抛出错误，要求使用真实实现
+        raise RuntimeError(
+            f"Local mode does not have a real AI implementation.\n\n"
+            f"Role: {config.name}\n"
+            f"Model: {config.model}\n\n"
+            f"To execute this agent, you have 3 options:\n"
+            f"1. Use mode='openclaw' with OpenClaw Gateway running (recommended)\n"
+            f"2. Implement direct API call in _execute_local() method\n"
+            f"3. Set BMAD_EVO_USE_MOCK=1 for testing only (will generate warnings)\n\n"
+            f"Current mode: {self.mode}"
         )
     
     def save_config(self, custom_agents: Dict[str, Dict[str, Any]]):

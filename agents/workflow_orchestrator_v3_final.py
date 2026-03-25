@@ -317,7 +317,13 @@ class WorkflowOrchestratorV3Final:
             json.dump(self.global_constraints, f, indent=2, ensure_ascii=False)
     
     def _execute_agent(self, role: RoleDefinition, task_description: str, model_mapping: Dict) -> Dict[str, Any]:
-        """【Agent 执行】调用对应模型角色"""
+        """
+        【Agent 执行】调用对应模型角色
+        
+        使用 AgentExecutor 执行真实 AI 调用，不再返回模拟数据。
+        """
+        from agent_executor import AgentExecutor, AgentResult
+        
         start_time = time.time()
         
         # 构建上下文（前置角色的输出）
@@ -326,14 +332,38 @@ class WorkflowOrchestratorV3Final:
         # 选择模型
         model = model_mapping.get('primary_model', 'kimi-coding/k2p5') if model_mapping else 'kimi-coding/k2p5'
         
-        # 这里应该是真实的模型调用
-        # 简化实现：返回模拟结果
-        return {
-            'output': f'【{role.title}执行结果】\n完成了: {role.responsibilities}\n输出: 示例输出内容',
-            'model': model,
-            'execution_time': time.time() - start_time,
-            'success': True
-        }
+        # 使用 AgentExecutor 执行真实调用
+        try:
+            executor = AgentExecutor(
+                project_path=self.project_path,
+                mode="openclaw"  # 使用 OpenClaw 模式进行真实调用
+            )
+            
+            # 执行 agent 任务
+            result: AgentResult = executor.execute(
+                phase=role.name,
+                context=f"Task: {task_description}\n\nContext:\n{context}"
+            )
+            
+            return {
+                'output': result.output,
+                'model': result.model_used,
+                'execution_time': result.execution_time,
+                'success': result.success,
+                'error': result.error,
+                'token_usage': result.token_usage
+            }
+            
+        except Exception as e:
+            logger.error(f"Agent execution failed for role {role.name}: {e}")
+            # 执行失败，返回错误信息
+            return {
+                'output': '',
+                'model': model,
+                'execution_time': time.time() - start_time,
+                'success': False,
+                'error': str(e)
+            }
     
     def _perform_audit(self, role_name: str, output: str) -> Dict:
         """【强制审计】自动触发"""
