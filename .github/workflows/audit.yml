@@ -27,13 +27,19 @@ jobs:
     - name: BMAD-EVO Fast Audit
       run: |
         echo "🔍 运行快速审计（AST only）"
-        python3 /path/to/bmad-evo/quick_audit.py --mode fast --exit-code your_code.py
+        python3 lib/ast_auditor.py --mode fast --exit-code lib/ agents/ examples/
+      continue-on-error: false
+    
+    - name: Pseudo-AI Code Scan
+      run: |
+        echo "🔍 扫描伪AI代码（假AI调用检测）"
+        python3 scripts/scan_pseudo_ai.py --directory . --ci-mode --verbose
       continue-on-error: false
     
     - name: BMAD-EVO Strict Audit
       run: |
         echo "🔍 运行严格审计（AST + regex）"
-        python3 /path/to/bmad-evo/quick_audit.py --mode strict --exit-code your_code.py
+        python3 lib/ast_auditor.py --mode strict lib/ agents/ examples/ || true
       continue-on-error: true  # 严格审计仅作为参考
     
     - name: Upload audit report
