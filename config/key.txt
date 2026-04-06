@@ -1,0 +1,3 @@
+API Key：sk-sp-68f6997fc9924babb9f6b50c03a5a529
+兼容OpenAI接口协议工具：https://coding.dashscope.aliyuncs.com/v1
+兼容Anthropic接口协议工具：https://coding.dashscope.aliyuncs.com/apps/anthropic

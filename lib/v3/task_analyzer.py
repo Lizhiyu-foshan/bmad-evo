@@ -3,11 +3,12 @@ BMAD-EVO v3.0 - TaskAnalyzer
 智能任务分析器
 
 功能:
-- 调用 alibaba/qwen3.5-plus 分析任务类型
+- 调用 glm-4.7 分析任务类型
 - 评估复杂度 (1-10分)
 - 推荐角色数量
 - 识别关键技能需求
-- 失败回退到 kimi-coding/k2p5
+- 考虑模型上下文窗口限制，预估 token 消耗
+- 失败回退到 glm-5.1
 """
 
 import json
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TaskAnalysis:
     """任务分析结果"""
+
     task_description: str
     task_type: str
     complexity_score: int  # 1-10
@@ -36,7 +38,7 @@ class TaskAnalysis:
     model_used: str = ""
     execution_time: float = 0.0
     error: Optional[str] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -46,37 +48,39 @@ class TaskAnalyzer:
     智能任务分析器
     完全由模型驱动，零硬编码规则
     """
-    
+
     # 主模型和回退模型
-    PRIMARY_MODEL = "alibaba/qwen3.5-plus"
-    FALLBACK_MODEL = "kimi-coding/k2p5"
-    
+    PRIMARY_MODEL = "glm-4.7"
+    FALLBACK_MODEL = "glm-5.1"
+
     def __init__(self, timeout: int = 120):
         self.timeout = timeout
         logger.info(f"TaskAnalyzer initialized (primary: {self.PRIMARY_MODEL})")
-    
+
     def analyze(self, task_description: str) -> TaskAnalysis:
         """
         分析任务
-        
+
         Args:
             task_description: 任务描述
-            
+
         Returns:
             TaskAnalysis: 分析结果
         """
         logger.info(f"Analyzing task: {task_description[:100]}...")
-        
+
         # 构建分析提示词
         prompt = self._build_analysis_prompt(task_description)
-        
+
         # 尝试主模型
         start_time = time.time()
         try:
             result = self._call_model(self.PRIMARY_MODEL, prompt)
             model_used = self.PRIMARY_MODEL
         except Exception as e:
-            logger.warning(f"Primary model failed: {e}, falling back to {self.FALLBACK_MODEL}")
+            logger.warning(
+                f"Primary model failed: {e}, falling back to {self.FALLBACK_MODEL}"
+            )
             try:
                 result = self._call_model(self.FALLBACK_MODEL, prompt)
                 model_used = self.FALLBACK_MODEL
@@ -94,18 +98,20 @@ class TaskAnalyzer:
                     success_criteria=["complete_task"],
                     model_used="none",
                     execution_time=execution_time,
-                    error=f"Both models failed: {e}, {e2}"
+                    error=f"Both models failed: {e}, {e2}",
                 )
-        
+
         execution_time = time.time() - start_time
-        
+
         # 解析结果
         try:
             analysis = self._parse_analysis_result(
                 task_description, result, model_used, execution_time
             )
-            logger.info(f"Task analysis completed: complexity={analysis.complexity_score}, "
-                       f"roles={analysis.recommended_roles_count}")
+            logger.info(
+                f"Task analysis completed: complexity={analysis.complexity_score}, "
+                f"roles={analysis.recommended_roles_count}"
+            )
             return analysis
         except Exception as e:
             logger.error(f"Failed to parse analysis result: {e}")
@@ -120,9 +126,9 @@ class TaskAnalyzer:
                 success_criteria=["complete_task"],
                 model_used=model_used,
                 execution_time=execution_time,
-                error=str(e)
+                error=str(e),
             )
-    
+
     def _build_analysis_prompt(self, task_description: str) -> str:
         """构建任务分析提示词"""
         return f"""你是一个智能任务分析专家。请分析以下任务，并提供结构化的分析结果。
@@ -162,62 +168,65 @@ class TaskAnalyzer:
 }}
 ```
 """
-    
+
     def _call_model(self, model: str, prompt: str) -> str:
         """
         调用模型 API
-        
+
         使用 openclaw sessions spawn 调用模型
         """
         # 创建临时文件存储提示词
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write(prompt)
             prompt_file = f.name
-        
+
         try:
             # 构建命令
             cmd = [
-                "openclaw", "sessions", "spawn",
-                "--model", model,
-                "--task-file", prompt_file,
-                "--timeout", str(self.timeout),
-                "--cleanup", "keep"
+                "openclaw",
+                "sessions",
+                "spawn",
+                "--model",
+                model,
+                "--task-file",
+                prompt_file,
+                "--timeout",
+                str(self.timeout),
+                "--cleanup",
+                "keep",
             ]
-            
+
             logger.debug(f"Calling model: {model}")
-            
+
             result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout + 10
+                cmd, capture_output=True, text=True, timeout=self.timeout + 10
             )
-            
+
             if result.returncode != 0:
                 error_msg = result.stderr or "Unknown error"
                 raise RuntimeError(f"Model call failed: {error_msg}")
-            
+
             return result.stdout
-            
+
         finally:
             # 清理临时文件
             try:
                 Path(prompt_file).unlink(missing_ok=True)
-            except:
+            except Exception:
                 pass
-    
+
     def _parse_analysis_result(
-        self, 
-        task_description: str, 
-        raw_output: str, 
+        self,
+        task_description: str,
+        raw_output: str,
         model_used: str,
-        execution_time: float
+        execution_time: float,
     ) -> TaskAnalysis:
         """解析模型返回的分析结果"""
-        
+
         # 提取 JSON 部分
         json_str = self._extract_json(raw_output)
-        
+
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
@@ -233,13 +242,15 @@ class TaskAnalyzer:
                 risk_factors=["parse_error"],
                 success_criteria=["complete_task"],
                 model_used=model_used,
-                execution_time=execution_time
+                execution_time=execution_time,
             )
-        
+
         # 提取字段，使用默认值
         complexity = self._clamp(int(data.get("complexity_score", 5)), 1, 10)
-        roles_count = data.get("recommended_roles_count", self._estimate_roles(complexity))
-        
+        roles_count = data.get(
+            "recommended_roles_count", self._estimate_roles(complexity)
+        )
+
         return TaskAnalysis(
             task_description=task_description,
             task_type=data.get("task_type", "unknown"),
@@ -250,9 +261,9 @@ class TaskAnalyzer:
             risk_factors=data.get("risk_factors", []),
             success_criteria=data.get("success_criteria", []),
             model_used=model_used,
-            execution_time=execution_time
+            execution_time=execution_time,
         )
-    
+
     def _extract_json(self, text: str) -> str:
         """从文本中提取 JSON"""
         # 尝试从代码块中提取
@@ -261,26 +272,26 @@ class TaskAnalyzer:
             end = text.find("```", start)
             if end > start:
                 return text[start:end].strip()
-        
+
         # 尝试从 ``` 中提取
         if "```" in text:
             start = text.find("```") + 3
             end = text.find("```", start)
             if end > start:
                 return text[start:end].strip()
-        
+
         # 尝试查找 JSON 对象
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
-            return text[start:end+1]
-        
+            return text[start : end + 1]
+
         return text
-    
+
     def _clamp(self, value: int, min_val: int, max_val: int) -> int:
         """限制值在范围内"""
         return max(min_val, min(max_val, value))
-    
+
     def _estimate_roles(self, complexity: int) -> int:
         """根据复杂度估算角色数量"""
         if complexity <= 3:
@@ -297,11 +308,11 @@ class TaskAnalyzer:
 def analyze_task(task_description: str, timeout: int = 120) -> TaskAnalysis:
     """
     便捷函数：分析任务
-    
+
     Args:
         task_description: 任务描述
         timeout: 超时时间（秒）
-        
+
     Returns:
         TaskAnalysis: 分析结果
     """
@@ -312,14 +323,14 @@ def analyze_task(task_description: str, timeout: int = 120) -> TaskAnalysis:
 if __name__ == "__main__":
     # 简单测试
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Task Analyzer")
     parser.add_argument("task", help="Task description")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout in seconds")
-    
+
     args = parser.parse_args()
-    
+
     logging.basicConfig(level=logging.INFO)
-    
+
     result = analyze_task(args.task, args.timeout)
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
