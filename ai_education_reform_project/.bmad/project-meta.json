@@ -1,0 +1,176 @@
+{
+  "project_name": "人工智能教育改革深度分析",
+  "project_code": "AI_EDU_REFORM_ANALYSIS",
+  "version": "1.0",
+  "created_at": "2026-04-06T22:50:00",
+  "status": "active",
+  "project_type": "教育政策研究与咨询",
+  "methodology": "BMAD-EVO 多角色协同分析",
+
+  "task_description": "使用 BMAD-EVO 生成一份关于人工智能教育改革的深度分析报告，重点探讨AI赋能教学、AI时代人才培养、教学组织改革、核心能力培养、民办技术应用型大学差异化定位",
+
+  "research_questions": [
+    "AI赋能教学：如何利用AI技术提升教学效果",
+    "培养适配AI时代社会需求的学生：新时代人才培养模式",
+    "教学组织方式和组织思想改革：适应新要求的教学体系",
+    "AI时代学生能力培养核心与课程体系：核心能力与课程设计",
+    "民办技术应用型大学差异化定位：新形势下的突围策略"
+  ],
+
+  "deliverables": {
+    "main_report": {
+      "filename": "ai_education_reform_report.md",
+      "description": "主报告，不少于10000字，覆盖5个核心研究问题",
+      "status": "completed",
+      "word_count": 15000
+    },
+    "generation_script": {
+      "filename": "generate_ai_education_report.py",
+      "description": "多角色协同分析脚本，可重复运行",
+      "status": "completed"
+    },
+    "project_documents": {
+      "requirement": {
+        "filename": "tasks/requirement.md",
+        "description": "项目需求文档"
+      },
+      "design": {
+        "filename": "tasks/design.md",
+        "description": "项目设计文档"
+      },
+      "assignment": {
+        "filename": "tasks/assignment.md",
+        "description": "任务分解与模型指派"
+      }
+    },
+    "summary": {
+      "filename": "outputs/reports/AI_EDUCATION_REPORT_SUMMARY.md",
+      "description": "项目完成总结"
+    }
+  },
+
+  "team": {
+    "project_manager": {
+      "name": "BMAD-EVO System",
+      "role": "项目负责和协调"
+    },
+    "roles": [
+      {
+        "name": "教育分析专家",
+        "specialty": "教育政策与实践",
+        "responsibility": "分析教育现状、趋势和挑战",
+        "model": "glm-4.7"
+      },
+      {
+        "name": "产业专家",
+        "specialty": "产业与就业市场",
+        "responsibility": "分析AI时代人才需求变化",
+        "model": "glm-5.1"
+      },
+      {
+        "name": "课程设计专家",
+        "specialty": "课程与教学设计",
+        "responsibility": "设计AI时代课程体系",
+        "model": "glm-4.7"
+      },
+      {
+        "name": "教学专家",
+        "specialty": "教学组织与改革",
+        "responsibility": "探讨教学组织改革方案",
+        "model": "glm-4.7-flash"
+      },
+      {
+        "name": "政策分析专家",
+        "specialty": "教育政策与高校管理",
+        "responsibility": "分析民办高校差异化定位",
+        "model": "glm-4.7"
+      }
+    ]
+  },
+
+  "structure": {
+    "tasks": "任务文档目录",
+    "outputs": {
+      "reports": "报告输出目录",
+      "code": "代码输出目录",
+      "docs": "文档输出目录"
+    },
+    ".bmad": "BMAD-EVO配置目录",
+    "logs": "执行日志目录"
+  },
+
+  "timeline": {
+    "start_date": "2026-04-06",
+    "end_date": "2026-04-06",
+    "total_days": 2,
+    "phases": [
+      {
+        "name": "阶段一：需求分析与启动",
+        "duration": "0.5天",
+        "tasks": 3
+      },
+      {
+        "name": "阶段二：多角色协同分析",
+        "duration": "1天",
+        "tasks": 5
+      },
+      {
+        "name": "阶段三：报告合成与审核",
+        "duration": "0.5天",
+        "tasks": 4
+      },
+      {
+        "name": "阶段四：文档整理与交付",
+        "duration": "0.5天",
+        "tasks": 4
+      },
+      {
+        "name": "阶段五：项目总结",
+        "duration": "0天",
+        "tasks": 3
+      }
+    ]
+  },
+
+  "quality_metrics": {
+    "content_quality": {
+      "completeness": "覆盖5个核心研究问题",
+      "accuracy": "信息准确，逻辑清晰",
+      "practicality": "建议可落地，方案可实施"
+    },
+    "format_quality": {
+      "structure": "结构清晰，层次分明",
+      "readability": "易于阅读，逻辑流畅",
+      "consistency": "格式统一，风格一致"
+    },
+    "innovation_quality": {
+      "novelty": "有独特观点和创新思路",
+      "foresight": "面向未来，引领趋势",
+      "applicability": "符合实际，解决痛点"
+    }
+  },
+
+  "acceptance_criteria": {
+    "content_acceptance": [
+      "覆盖5个核心研究问题",
+      "每个问题分析深入，不少于1500字",
+      "提供具体可落地的建议",
+      "包含案例分析和实施路径"
+    ],
+    "format_acceptance": [
+      "使用Markdown格式",
+      "章节结构清晰",
+      "包含必要的表格和列表",
+      "总字数不少于10000字"
+    ],
+    "quality_acceptance": [
+      "信息准确，逻辑清晰",
+      "面向未来，具有前瞻性",
+      "针对性强，符合民办高校特点",
+      "创新性突出，有独特观点"
+    ]
+  },
+
+  "version": "v1.0",
+  "last_updated": "2026-04-06T22:50:00"
+}
