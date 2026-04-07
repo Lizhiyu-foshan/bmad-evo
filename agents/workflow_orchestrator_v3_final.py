@@ -49,6 +49,7 @@ from v3.role_generator import RoleFlow, RoleDefinition
 from v3.resilient_executor import WorkflowExecutor
 from v3.context_budget import ContextBudgetManager, estimate_tokens
 from v3.task_directory_manager import TaskDirectoryManager, OutputType, TaskStatus
+from v3.output_validator import OutputQualityValidator
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -93,6 +94,7 @@ class WorkflowOrchestratorV3Final:
         self.auditor = ConstraintAuditor(project_path)
         self.decision_interface = DecisionInterface(project_path, interactive)
         self.budget_manager = ContextBudgetManager()
+        self.output_validator = OutputQualityValidator(min_score=self.pass_threshold)
 
         self.role_flow: Optional[RoleFlow] = None
         self.task_analysis = None
@@ -483,13 +485,22 @@ class WorkflowOrchestratorV3Final:
             )
             self._print_audit_results(audit_result, audit_score)
 
-            if audit_score >= self.pass_threshold:
+            # 输出质量验证（新增）
+            output_validation_result = self._perform_output_validation(
+                exec_result.get("output", ""), role_name, phase_num
+            )
+
+            # 如果审计和输出验证都通过，则返回成功
+            if audit_score >= self.pass_threshold and output_validation_result.passed:
                 return self._create_passed_result(
                     phase_num, role_name, iteration, audit_score, exec_result
                 )
 
+            # 创建包含审计和输出验证的反馈
             accumulated_feedback.append(
-                self._create_violation_feedback(iteration, audit_score, audit_result)
+                self._create_iteration_feedback(
+                    iteration, audit_score, audit_result, output_validation_result
+                )
             )
 
             first_iteration_result = self._handle_first_iteration_interaction(
@@ -555,6 +566,58 @@ class WorkflowOrchestratorV3Final:
         if audit_score < self.pass_threshold:
             print(f"   ❌ 审计未通过 ({audit_score}分 < {self.pass_threshold}分)")
 
+    def _perform_output_validation(self, output: str, role_name: str, phase_num: int):
+        """
+        执行输出质量验证
+
+        检查：
+        1. 内容完整性（不只是框架）
+        2. 内容深度（有具体分析、案例、数据）
+        3. 内容质量（字数、结构）
+        """
+        print(f"\n   🔍 【输出质量验证】检查中...")
+
+        # 创建临时文件进行验证
+        temp_file = (
+            self.project_path / ".bmad" / f"temp_output_phase{phase_num}_{role_name}.md"
+        )
+        temp_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_file.write_text(output, encoding="utf-8")
+
+        try:
+            validation_result = self.output_validator.validate_report(
+                report_path=temp_file, expected_structure=None
+            )
+
+            # 打印验证结果
+            print(f"   📊 输出质量分数: {validation_result.overall_score}/100")
+            print(f"   📏 字数: {validation_result.metrics.get('word_count', 0):,} 字")
+            print(
+                f"   📑 章节: H1:{validation_result.metrics.get('h1_count', 0)}, H2:{validation_result.metrics.get('h2_count', 0)}, H3:{validation_result.metrics.get('h3_count', 0)}"
+            )
+
+            if validation_result.passed:
+                print(f"   ✅ 输出质量验证通过")
+            else:
+                print(f"   ❌ 输出质量验证未通过")
+                # 打印关键问题
+                critical_issues = [
+                    i for i in validation_result.issues if i.level.value == "CRITICAL"
+                ]
+                if critical_issues:
+                    print(f"\n   🚨 关键问题（必须修复）:")
+                    for issue in critical_issues[:3]:
+                        print(f"      • {issue.message}")
+                        if issue.suggestion:
+                            print(f"        💡 {issue.suggestion}")
+
+        finally:
+            # 清理临时文件
+            if temp_file.exists():
+                temp_file.unlink()
+
+        return validation_result
+
     def _create_passed_result(
         self,
         phase_num: int,
@@ -577,11 +640,51 @@ class WorkflowOrchestratorV3Final:
     def _create_violation_feedback(
         self, iteration: int, audit_score: int, audit: Dict
     ) -> str:
-        """创建违规反馈"""
+        """创建违规反馈（保持向后兼容）"""
         violation_summary = "; ".join(
             v.get("message", "")[:50] for v in audit.get("violations", [])[:3]
         )
         return f"[迭代{iteration}未通过, 分数={audit_score}] {violation_summary}"
+
+    def _create_iteration_feedback(
+        self, iteration: int, audit_score: int, audit: Dict, output_validation: Any
+    ) -> str:
+        """
+        创建迭代反馈（包含审计和输出验证结果）
+
+        Returns:
+            反馈字符串
+        """
+        feedback_parts = []
+
+        # 审计结果反馈
+        if audit.get("violations"):
+            violation_summary = "; ".join(
+                v.get("message", "")[:50] for v in audit.get("violations", [])[:2]
+            )
+            feedback_parts.append(f"审计未通过 ({audit_score}分): {violation_summary}")
+
+        # 输出质量验证反馈
+        if not output_validation.passed:
+            critical_issues = [
+                i for i in output_validation.issues if i.level.value == "CRITICAL"
+            ]
+            if critical_issues:
+                issue_summary = "; ".join(i.message[:50] for i in critical_issues[:2])
+                feedback_parts.append(
+                    f"输出质量问题 ({output_validation.overall_score}分): {issue_summary}"
+                )
+            else:
+                feedback_parts.append(
+                    f"输出质量未达标 ({output_validation.overall_score}分)"
+                )
+
+        # 字数反馈
+        word_count = output_validation.metrics.get("word_count", 0)
+        if word_count < 5000:
+            feedback_parts.append(f"字数不足 ({word_count}字，建议至少10,000字)")
+
+        return f"[迭代{iteration}反馈] " + "; ".join(feedback_parts)
 
     def _handle_first_iteration_interaction(
         self,
