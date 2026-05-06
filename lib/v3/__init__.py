@@ -1,5 +1,5 @@
 """
-BMAD-EVO v3.1 - 全动态智能生成系统
+BMAD-EVO v3.1 / v4.0 - 全动态智能生成系统
 
 模块:
 - task_analyzer: 智能任务分析器
@@ -8,7 +8,14 @@ BMAD-EVO v3.1 - 全动态智能生成系统
 - context_budget: 上下文预算管理器
 - resilient_executor: 弹性执行器
 - task_directory_manager: 任务目录管理器
-- bmad_evo3: 主入口类
+- output_validator: 输出质量验证器
+
+v4.0 新增（通过 v4 子模块）:
+- thinking_chain: 思考链引擎（增量采集+双向反馈+自我反思）
+
+配置:
+- config/bmad.json: 统一配置文件
+- lib/config_loader.py: 配置加载器
 """
 
 from .task_analyzer import TaskAnalyzer, TaskAnalysis, analyze_task
@@ -50,7 +57,6 @@ from .task_directory_manager import (
     VersionInfo,
     VersionIndex,
 )
-from .bmad_evo3 import BMADEVO3, execute_task
 
 __all__ = [
     "TaskAnalyzer",
@@ -84,8 +90,6 @@ __all__ = [
     "TaskStatus",
     "VersionInfo",
     "VersionIndex",
-    "BMADEVO3",
-    "execute_task",
 ]
 
-__version__ = "3.1.0"
+__version__ = "4.0.0"

@@ -1,4 +1,0 @@
-  File "D:\bmad-evo\real_multi_agent_analysis\tasks\test_model_availability.py", line 214
-    report += "}"""\n```\n\n---\n
-                    ^
-SyntaxError: unexpected character after line continuation character

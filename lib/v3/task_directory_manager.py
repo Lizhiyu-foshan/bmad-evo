@@ -295,7 +295,7 @@ class TaskDirectoryManager:
 ### 回退链
 
 ```
-主模型 (GLM) → 备选1 (GLM) → 备选2 (GLM) → kimi-coding/k2p5 (绝对回退)
+主模型 (GLM-5.1) → 备选 (GLM-4.7) → kimi-coding/k2.6 (绝对回退)
 ```
 
 ## 执行计划
@@ -646,7 +646,7 @@ class TaskDirectoryManager:
 ### 回退链
 
 ```
-主模型 (GLM) → 备选1 (GLM) → 备选2 (GLM) → kimi-coding/k2p5 (绝对回退)
+主模型 (GLM-5.1) → 备选 (GLM-4.7) → kimi-coding/k2.6 (绝对回退)
 ```
 
 ### 成本估算

@@ -1,22 +1,20 @@
 """
 BMAD-EVO v3.0 - ResilientExecutor
-弹性执行器
 
-功能:
-- 带失败回退的执行
-- 主模型失败 → 备选模型 → k2.5终极回退
-- 记录执行日志
+Features:
+- Failure fallback chain: glm-5.1 -> glm-4.7 -> kimi-coding/k2.6
+- Execution logging
 """
 
 import json
 import logging
-import subprocess
-import tempfile
 import time
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
+
+from ..config_loader import get_model_chain_for_component
 
 logger = logging.getLogger(__name__)
 
@@ -65,21 +63,23 @@ class ResilientExecutor:
     """
     弹性执行器
     提供多层失败回退机制
+    模型和超时从 config/bmad.json 读取
     """
-
-    ULTIMATE_FALLBACK = "glm-4.7"
-    ABSOLUTE_FALLBACK = "kimi-coding/k2p5"
 
     def __init__(
         self,
         project_path: Optional[str] = None,
-        max_retries: int = 3,
-        timeout: int = 300,
+        max_retries: Optional[int] = None,
+        timeout: Optional[int] = None,
         enable_logging: bool = True,
     ):
+        from ..config_loader import get_config, get_timeout, get_quality_threshold
+        _cfg = get_config()
         self.project_path = Path(project_path) if project_path else Path.cwd()
-        self.max_retries = max_retries
-        self.timeout = timeout
+        self.max_retries = max_retries if max_retries is not None else get_quality_threshold("max_retries", 3)
+        self.timeout = timeout if timeout is not None else get_timeout("resilient_executor")
+        self.ultimate_fallback = _cfg["models"]["secondary"]
+        self.absolute_fallback = _cfg["models"]["absolute_fallback"]
         self.enable_logging = enable_logging
 
         # 日志存储
@@ -120,10 +120,10 @@ class ResilientExecutor:
         start_time = time.time()
         logs = []
 
-        if self.ULTIMATE_FALLBACK not in model_chain:
-            model_chain = model_chain + [self.ULTIMATE_FALLBACK]
-        if self.ABSOLUTE_FALLBACK not in model_chain:
-            model_chain = model_chain + [self.ABSOLUTE_FALLBACK]
+        if self.ultimate_fallback not in model_chain:
+            model_chain = model_chain + [self.ultimate_fallback]
+        if self.absolute_fallback not in model_chain:
+            model_chain = model_chain + [self.absolute_fallback]
 
         logger.info(
             f"Executing role '{role_id}' with {len(model_chain)} models in chain"
@@ -212,12 +212,12 @@ class ResilientExecutor:
 
                     try:
                         fallback_output = self._call_model(
-                            self.ABSOLUTE_FALLBACK, prompt
+                            self.absolute_fallback, prompt
                         )
                         log = ExecutionLog(
                             timestamp=datetime.now().isoformat(),
                             role_id=role_id,
-                            model=self.ABSOLUTE_FALLBACK,
+                            model=self.absolute_fallback,
                             attempt=attempt + 1,
                             success=True,
                             execution_time=time.time() - start_time,
@@ -232,7 +232,7 @@ class ResilientExecutor:
                             role_id=role_id,
                             success=True,
                             output=fallback_output,
-                            final_model=self.ABSOLUTE_FALLBACK,
+                            final_model=self.absolute_fallback,
                             total_attempts=attempt + 1,
                             execution_logs=logs,
                             total_execution_time=time.time() - start_time,
@@ -251,7 +251,7 @@ class ResilientExecutor:
                             total_attempts=attempt,
                             execution_logs=logs,
                             total_execution_time=total_time,
-                            error=f"All models failed (including {self.ABSOLUTE_FALLBACK}). Last error: {error_msg}",
+                            error=f"All models failed (including {self.absolute_fallback}). Last error: {error_msg}",
                         )
 
         # 不应该到达这里
@@ -291,40 +291,9 @@ class ResilientExecutor:
         return "\n".join(parts)
 
     def _call_model(self, model: str, prompt: str) -> str:
-        """调用模型"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write(prompt)
-            prompt_file = f.name
-
-        try:
-            cmd = [
-                "openclaw",
-                "sessions",
-                "spawn",
-                "--model",
-                model,
-                "--task-file",
-                prompt_file,
-                "--timeout",
-                str(self.timeout),
-                "--cleanup",
-                "keep",
-            ]
-
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout + 30
-            )
-
-            if result.returncode != 0:
-                raise RuntimeError(f"Model call failed: {result.stderr}")
-
-            return result.stdout
-
-        finally:
-            try:
-                Path(prompt_file).unlink(missing_ok=True)
-            except Exception:
-                pass
+        """Call model via opencode adapter"""
+        from ..opencode_adapter import call_model
+        return call_model(model, prompt, timeout=self.timeout)
 
     def _generate_fallback_output(
         self, role_id: str, role_name: str, task_context: str, error: str
@@ -514,7 +483,7 @@ class WorkflowExecutor:
 
         # 获取模型链
         model_chain = model_routing.get(
-            role_id, ["glm-4.7", "glm-4.7-flash", "glm-5.1"]
+            role_id, get_model_chain_for_component("resilient_executor")
         )
 
         # 获取前置阶段输出

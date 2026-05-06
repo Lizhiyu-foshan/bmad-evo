@@ -1,0 +1,147 @@
+{
+  "roles": [
+    {
+      "id": "role-001",
+      "name": "geopolitical_analyst",
+      "title": "地缘政治分析师",
+      "model": "glm-5.1",
+      "description": "分析霍尔木兹海峡封锁的地缘政治格局变化，包括美伊博弈、地区力量平衡、主要参与国国内政治现状",
+      "responsibilities": [
+        "梳理美伊霍尔木兹海峡博弈现状与历史脉络",
+        "分析美国国内政治对中东政策的影响",
+        "分析伊朗国内政治派系与决策逻辑",
+        "评估沙特、以色列、阿联酋等地区大国立场",
+        "评估中国、俄罗斯、印度等大国反应",
+        "识别关键地缘政治风险点与转折信号"
+      ],
+      "input_from": [],
+      "output_to": ["energy_economist", "military_strategist"],
+      "can_parallel": false,
+      "model_reasoning": "深度推理能力，需要系统性地缘政治分析"
+    },
+    {
+      "id": "role-002",
+      "name": "military_strategist",
+      "title": "军事战略分析师",
+      "model": "glm-5.1",
+      "description": "分析美伊双方在霍尔木兹海峡的军事部署、封锁能力、军事对抗升级可能性",
+      "responsibilities": [
+        "评估伊朗封锁霍尔木兹海峡的军事能力（水雷、导弹快艇、岸基导弹）",
+        "评估美国海军护航能力和反封锁手段",
+        "分析军事冲突升级的概率与路径",
+        "评估以色列可能介入的军事行动",
+        "分析对全球军事格局的连锁影响"
+      ],
+      "input_from": ["geopolitical_analyst"],
+      "output_to": ["commodity_analyst"],
+      "can_parallel": true,
+      "model_reasoning": "军事分析需要深度推理"
+    },
+    {
+      "id": "role-003",
+      "name": "energy_economist",
+      "title": "能源经济学家",
+      "model": "glm-5.1",
+      "description": "评估封锁对全球石油供应链、油价走势的影响",
+      "responsibilities": [
+        "分析霍尔木兹海峡的石油运输量与全球占比",
+        "评估封锁对原油供应的实质影响（区分短期冲击vs长期结构）",
+        "预测布伦特原油、WTI原油价格走势",
+        "分析OPEC+的应对策略与增产空间",
+        "评估替代运输路线（绕行好望角、管道）的缓冲能力",
+        "分析美国页岩油产业的产量弹性"
+      ],
+      "input_from": ["geopolitical_analyst"],
+      "output_to": ["commodity_analyst"],
+      "can_parallel": true,
+      "model_reasoning": "能源经济需要综合数据分析和推理"
+    },
+    {
+      "id": "role-004",
+      "name": "commodity_analyst",
+      "title": "大宗商品分析师",
+      "model": "glm-4.7",
+      "description": "分类评估对油价、农产品、化工产品、黄金的影响",
+      "responsibilities": [
+        "油价：原油价格走势预测（短期/中期/半年）",
+        "农产品：粮食运输影响、化肥供应链（天然气→合成氨→化肥链）、粮价传导",
+        "化工产品：石化原料供应链中断风险、乙烯/丙烯等基础化工品价格",
+        "黄金：避险需求推动、通胀预期对金价的影响、央行购金行为",
+        "铜/铁矿石等工业金属：全球制造业需求端影响"
+      ],
+      "input_from": ["energy_economist", "military_strategist"],
+      "output_to": ["fed_policy_analyst"],
+      "can_parallel": false,
+      "model_reasoning": "综合分析能力强，需要跨品类对比"
+    },
+    {
+      "id": "role-005",
+      "name": "fed_policy_analyst",
+      "title": "美联储政策分析师",
+      "model": "glm-5.1",
+      "description": "分析封锁引发的通胀冲击对美联储降息路径的影响",
+      "responsibilities": [
+        "评估油价飙升对美国CPI的传导机制与幅度",
+        "分析美联储在'通胀回升vs经济衰退'之间的两难处境",
+        "预测美联储降息时点与幅度的调整概率",
+        "分析通胀预期（密歇根指数、TIPS盈亏平衡）的变化",
+        "评估特朗普/拜登政府对美联储的政治压力",
+        "对比2020年疫情冲击vs本次地缘冲击的政策应对差异"
+      ],
+      "input_from": ["commodity_analyst"],
+      "output_to": ["financial_market_strategist"],
+      "can_parallel": false,
+      "model_reasoning": "货币政策分析需要深度推理"
+    },
+    {
+      "id": "role-006",
+      "name": "financial_market_strategist",
+      "title": "金融市场策略师",
+      "model": "glm-5.1",
+      "description": "综合预测半年后股市、债市、大宗商品的走势",
+      "responsibilities": [
+        "股市：美股/港股/A股的板块分化预测（能源股vs科技股vs消费股）",
+        "债市：美债收益率曲线变化、信用利差、新兴市场债风险",
+        "大宗商品：综合价格走势与配置建议",
+        "汇率：美元指数、人民币、海湾国家货币",
+        "资金流向：避险资金轮动规律",
+        "给出具体的投资策略建议"
+      ],
+      "input_from": ["fed_policy_analyst"],
+      "output_to": ["risk_manager"],
+      "can_parallel": false,
+      "model_reasoning": "需要综合所有分析进行策略推理"
+    },
+    {
+      "id": "role-007",
+      "name": "risk_manager",
+      "title": "风险管理师",
+      "model": "glm-4.7",
+      "description": "评估分析的不确定性，进行情景分析，制定风险对冲建议",
+      "responsibilities": [
+        "识别分析中的关键假设和不确定性",
+        "构建三种情景（乐观/基准/悲观）",
+        "评估黑天鹅事件概率",
+        "给出风险对冲策略建议",
+        "标注预测置信度"
+      ],
+      "input_from": ["financial_market_strategist"],
+      "output_to": [],
+      "can_parallel": false,
+      "model_reasoning": "审查和评估能力强"
+    }
+  ],
+  "execution_order": [
+    "geopolitical_analyst",
+    "energy_economist",
+    "military_strategist",
+    "commodity_analyst",
+    "fed_policy_analyst",
+    "financial_market_strategist",
+    "risk_manager"
+  ],
+  "parallel_groups": [
+    ["energy_economist", "military_strategist"]
+  ],
+  "model_fallback_chain": "glm-5.1 -> glm-4.7 -> kimi-coding/k2.6"
+}

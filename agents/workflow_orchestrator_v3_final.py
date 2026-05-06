@@ -51,6 +51,12 @@ from v3.context_budget import ContextBudgetManager, estimate_tokens
 from v3.task_directory_manager import TaskDirectoryManager, OutputType, TaskStatus
 from v3.output_validator import OutputQualityValidator
 
+try:
+    from v4 import ThinkingChainExecutor, AnalysisMode, ThinkingChainState
+    V4_AVAILABLE = True
+except ImportError:
+    V4_AVAILABLE = False
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -66,30 +72,32 @@ class WorkflowOrchestratorV3Final:
     交互确认 → 约束审计 → 阶段执行（多轮迭代）
     """
 
-    DEFAULT_MAX_RETRIES = 3
-    DEFAULT_PASS_THRESHOLD = 85
-    DEFAULT_MAX_ITERATIONS = 5
-
     def __init__(
         self,
         project_path: str,
         interactive: bool = True,
         config: Optional[Dict[str, Any]] = None,
+        mode: str = "analyze",
     ):
         self.project_path = Path(project_path)
         self.interactive = interactive
         self.config = config or {}
+        self.mode = mode
 
-        self.max_retries = self.config.get("max_retries", self.DEFAULT_MAX_RETRIES)
+        if mode == "pipeline":
+            self.interactive = False
+
+        from lib.config_loader import get_quality_threshold, get_max_retries, get_timeout
+        self.max_retries = self.config.get("max_retries", get_max_retries("workflow", 3))
         self.pass_threshold = self.config.get(
-            "pass_threshold", self.DEFAULT_PASS_THRESHOLD
+            "pass_threshold", get_quality_threshold("pass_threshold", 85)
         )
         self.max_iterations = self.config.get(
-            "max_iterations", self.DEFAULT_MAX_ITERATIONS
+            "max_iterations", get_max_retries("workflow_iterations", 5)
         )
 
-        self.task_analyzer = TaskAnalyzer(timeout=120)
-        self.role_generator = DynamicRoleGenerator(timeout=180)
+        self.task_analyzer = TaskAnalyzer(timeout=get_timeout("task_analysis"))
+        self.role_generator = DynamicRoleGenerator(timeout=get_timeout("role_generation"))
         self.model_router = ModelRouter()
         self.auditor = ConstraintAuditor(project_path)
         self.decision_interface = DecisionInterface(project_path, interactive)
@@ -104,6 +112,8 @@ class WorkflowOrchestratorV3Final:
         self.iteration_feedback: List[str] = []
 
         self.task_dir_manager: Optional[TaskDirectoryManager] = None
+        self.thinking_chain_executor: Optional[Any] = None
+        self.initial_collected_data: str = ""
 
         logger.info(f"WorkflowOrchestratorV3Final initialized (v3.1)")
 
@@ -132,13 +142,26 @@ class WorkflowOrchestratorV3Final:
         self._step5_role_flow_generation(task_description)
         self._step55_context_budget_check(task_description)
 
+        is_thinking_chain = (
+            self.task_analysis
+            and self.task_analysis.analysis_mode == "complex_thinking_chain"
+            and V4_AVAILABLE
+        )
+
+        if is_thinking_chain:
+            print(f"\n   🧠 检测到复杂分析模式 (复杂度={self.task_analysis.complexity_score}/10)")
+            print(f"   🧠 启用思考链引擎: 增量数据采集 + 双向反馈 + 自我反思")
+
         if not self._step56_interactive_plan_confirmation(task_description):
             return {"success": False, "reason": "user_cancelled"}
 
         if not self._step57_plan_constraint_audit(task_description):
             return {"success": False, "reason": "constraint_audit_failed"}
 
-        all_passed = self._step6_phase_execution_loop(task_description)
+        if is_thinking_chain:
+            all_passed = self._step6_thinking_chain_execution(task_description)
+        else:
+            all_passed = self._step6_phase_execution_loop(task_description)
 
         return self._generate_final_report(task_description, all_passed)
 
@@ -277,7 +300,6 @@ class WorkflowOrchestratorV3Final:
                 for suggestion in result["check"]["suggestions"]:
                     print(f"      💡 {suggestion}")
 
-        # 更新 assignment.md 文档（任务分解和模型指派）
         if self.task_dir_manager:
             self.task_dir_manager.update_assignment_document(
                 self.role_flow,
@@ -285,6 +307,169 @@ class WorkflowOrchestratorV3Final:
                 report,
             )
             print("   ✅ 已更新 tasks/assignment.md")
+
+    def _step6_thinking_chain_execution(self, task_description: str) -> bool:
+        """
+        v4.0 思考链执行模式
+
+        相比v3.1的单向流:
+        1. 每个角色执行前: 规划并执行增量数据采集
+        2. 每个角色执行后: 生成双向反馈，可能触发前置角色重新执行
+        3. 所有角色完成后: 自我反思链，检查遗漏/偏见/数据过时
+        4. 反思发现问题: 触发受影响角色重新分析
+        """
+        print("\n" + "=" * 70)
+        print("🧠 Step 6 (Thinking Chain): 思考链执行模式")
+        print("=" * 70)
+        print("   模式: 增量数据采集 + 双向反馈 + 自我反思")
+        if self.task_analysis and not self.task_analysis.needs_data_collection:
+            print("   ⚠️ 任务分析判定: 不需要实时数据采集，跳过数据采集流程")
+
+        role_defs = {}
+        for role in self.role_flow.roles:
+            role_defs[role.name] = role.to_dict()
+
+        self.thinking_chain_executor = ThinkingChainExecutor(
+            task_description=task_description,
+            role_execution_order=self.role_flow.execution_order,
+            role_definitions=role_defs,
+            enable_data_collection=self.task_analysis.needs_data_collection if self.task_analysis else True,
+        )
+
+        all_passed = self._tc_forward_pass(task_description)
+
+        print(f"\n🧠 正向执行完成，启动自我反思...")
+        self._tc_self_reflection_loop(task_description)
+
+        return all_passed
+
+    def _tc_forward_pass(self, task_description: str) -> bool:
+        """思考链正向执行（含增量采集和双向反馈）"""
+        tc = self.thinking_chain_executor
+        all_passed = True
+        roles_to_execute = list(tc.state.role_execution_order)
+        executed_set = set()
+
+        iteration = 0
+        while roles_to_execute and iteration < len(tc.state.role_execution_order) * 3:
+            iteration += 1
+            role_name = roles_to_execute.pop(0)
+
+            if role_name in executed_set:
+                continue
+
+            role = self._get_role_by_name(role_name)
+            if not role:
+                continue
+
+            input_roles = role.input_from if role else []
+            all_inputs_done = all(r in executed_set for r in input_roles)
+
+            if not all_inputs_done:
+                roles_to_execute.append(role_name)
+                continue
+
+            print(f"\n{'=' * 70}")
+            print(f"🧠 【思考链】执行角色: {role.title}")
+            print(f"   增量数据采集: {'需要' if role.data_collection_needs and tc.enable_data_collection else '无额外需求'}")
+            print(f"{'=' * 70}")
+
+            enhanced_context, collection_spec = tc.get_pre_execution_context(
+                role_name, self.initial_collected_data
+            )
+
+            if collection_spec.queries:
+                print(f"\n   📊 增量数据采集需求 ({len(collection_spec.queries)} 项):")
+                for q in collection_spec.queries[:5]:
+                    print(f"      - {q[:80]}")
+                print(f"   优先级: {collection_spec.priority}")
+                print(f"   建议来源: {', '.join(collection_spec.sources[:3])}")
+
+            pending_fb = [f for f in tc.state.pending_feedback if f.to_role == role_name]
+            if pending_fb:
+                print(f"\n   📨 收到来自后续角色的反馈 ({len(pending_fb)} 条):")
+                for fb in pending_fb[:3]:
+                    print(f"      [{fb.priority}] {fb.from_role}: {fb.content[:60]}...")
+
+            phase_result = self._execute_phase_with_iteration(
+                role, task_description, len(executed_set) + 1,
+                additional_context=enhanced_context
+            )
+            self.phase_results[role_name] = phase_result
+
+            if not phase_result.get("passed"):
+                all_passed = False
+
+            output = phase_result.get("output", "")
+            feedbacks = tc.post_execution_process(role_name, output)
+
+            if feedbacks:
+                print(f"\n   📤 生成的反馈 ({len(feedbacks)} 条):")
+                for fb in feedbacks[:3]:
+                    print(f"      → [{fb.to_role}] ({fb.feedback_type}): {fb.content[:60]}...")
+
+            re_exec_role = tc.check_re_execution_needed()
+            if re_exec_role and re_exec_role not in roles_to_execute:
+                print(f"\n   🔄 高优先级反馈触发重新执行: {re_exec_role}")
+                tc.record_re_execution(re_exec_role)
+                roles_to_execute.insert(0, re_exec_role)
+
+            executed_set.add(role_name)
+
+        return all_passed
+
+    def _tc_self_reflection_loop(self, task_description: str):
+        """思考链自我反思循环"""
+        tc = self.thinking_chain_executor
+
+        issues, needs_correction = tc.run_self_reflection()
+
+        print(f"\n{'=' * 70}")
+        print("🪞 自我反思结果")
+        print(f"{'=' * 70}")
+
+        if not issues:
+            print("   ✅ 反思通过：未发现重大问题")
+            return
+
+        critical = [i for i in issues if i.severity == "critical"]
+        high = [i for i in issues if i.severity == "high"]
+        medium = [i for i in issues if i.severity == "medium"]
+        low = [i for i in issues if i.severity == "low"]
+
+        print(f"   发现问题: {len(issues)} 个")
+        print(f"   CRITICAL: {len(critical)}, HIGH: {len(high)}, MEDIUM: {len(medium)}, LOW: {len(low)}")
+
+        for i, issue in enumerate(issues[:10], 1):
+            print(f"\n   {i}. [{issue.severity.upper()}] {issue.category}")
+            print(f"      {issue.description[:100]}")
+            if issue.affected_roles:
+                print(f"      影响角色: {', '.join(issue.affected_roles)}")
+            if issue.requires_re_execution:
+                print(f"      ⚠️ 需要重新执行")
+
+        if needs_correction and tc.state.current_reflection_round < tc.state.max_reflection_rounds:
+            print(f"\n   🔄 启动修正轮次 ({tc.state.current_reflection_round}/{tc.state.max_reflection_rounds})...")
+
+            roles_to_re_exec = tc.get_roles_needing_re_execution()
+            if roles_to_re_exec:
+                print(f"   需要重新执行的角色: {', '.join(roles_to_re_exec)}")
+                for role_name in roles_to_re_exec:
+                    role = self._get_role_by_name(role_name)
+                    if role:
+                        tc.record_re_execution(role_name)
+                        print(f"\n   🔄 重新执行: {role.title}")
+                        re_exec_ctx = self._build_re_execution_context(tc, role_name)
+                        phase_result = self._execute_phase_with_iteration(
+                            role, task_description, 99,
+                            additional_context=re_exec_ctx
+                        )
+                        self.phase_results[role_name] = phase_result
+                        tc.state.role_outputs[role_name] = phase_result.get("output", "")
+
+                self._tc_self_reflection_loop(task_description)
+        else:
+            print(f"\n   📝 反思完成，未触发修正（或已达到最大修正轮次）")
 
     def _interactive_plan_confirmation(self, task_description: str) -> bool:
         """
@@ -302,6 +487,7 @@ class WorkflowOrchestratorV3Final:
             print(f"   任务: {task_description[:80]}...")
             print(f"   任务类型: {self.task_analysis.task_type}")
             print(f"   复杂度: {self.task_analysis.complexity_score}/10")
+            print(f"   分析模式: {'🧠 思考链（增量采集+双向反馈+自我反思）' if self.task_analysis.analysis_mode == 'complex_thinking_chain' else '单向流（v3.1兼容）'}")
             print(f"   角色数: {self.role_flow.total_roles}")
             print(f"   {'─' * 50}")
             print(f"   执行顺序:")
@@ -456,7 +642,8 @@ class WorkflowOrchestratorV3Final:
             return True
 
     def _execute_phase_with_iteration(
-        self, role: RoleDefinition, task_description: str, phase_num: int
+        self, role: RoleDefinition, task_description: str, phase_num: int,
+        additional_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         执行单个阶段（多轮迭代）
@@ -476,7 +663,8 @@ class WorkflowOrchestratorV3Final:
             self._print_iteration_info(role, model_mapping)
 
             exec_result = self._execute_agent_with_feedback(
-                role, task_description, model_mapping, accumulated_feedback
+                role, task_description, model_mapping, accumulated_feedback,
+                additional_context=additional_context
             )
             print(f"   ⏱️  执行时间: {exec_result.get('execution_time', 0):.2f}s")
 
@@ -537,13 +725,15 @@ class WorkflowOrchestratorV3Final:
         task_description: str,
         model_mapping: Optional[Dict],
         accumulated_feedback: List[str],
+        additional_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """执行 agent（包含反馈）"""
         iteration_feedback = (
             "\n".join(accumulated_feedback) if accumulated_feedback else None
         )
         return self._execute_agent(
-            role, task_description, model_mapping, iteration_feedback
+            role, task_description, model_mapping, iteration_feedback,
+            additional_context=additional_context
         )
 
     def _perform_and_score_audit(self, role_name: str, output: str) -> tuple:
@@ -781,6 +971,7 @@ class WorkflowOrchestratorV3Final:
         task_description: str,
         model_mapping: Dict,
         iteration_feedback: Optional[str] = None,
+        additional_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Agent 执行"""
         from agent_executor import AgentExecutor, AgentResult
@@ -795,9 +986,11 @@ class WorkflowOrchestratorV3Final:
         )
 
         try:
-            executor = AgentExecutor(project_path=self.project_path, mode="openclaw")
+            executor = AgentExecutor(project_path=self.project_path, mode="opencode")
 
             full_context = f"Task: {task_description}\n\nContext:\n{context}"
+            if additional_context:
+                full_context += f"\n\n## 实时采集数据（思考链增量数据）\n{additional_context}"
             if iteration_feedback:
                 full_context += (
                     f"\n\n## 迭代反馈（需要改进的问题）\n{iteration_feedback}"
@@ -911,6 +1104,17 @@ class WorkflowOrchestratorV3Final:
                     f"【来自{input_role}】\n{result.get('output', '')}"
                 )
         return "\n\n".join(context_parts)
+
+    def _build_re_execution_context(
+        self, tc: Any, role_name: str
+    ) -> Optional[str]:
+        """为重新执行的角色构建包含已采集数据的上下文"""
+        if not hasattr(tc, "state") or not tc.state.collected_data:
+            return None
+        parts = []
+        for rn, data in tc.state.collected_data.items():
+            parts.append(f"## {rn} 采集的实时数据\n{data[:2000]}")
+        return "\n\n".join(parts) if parts else None
 
     def _generate_project(self, task_description: str):
         """
@@ -1143,14 +1347,51 @@ class WorkflowOrchestratorV3Final:
             version_summary = self.task_dir_manager.get_version_summary()
             print(f"\n{version_summary}")
 
-        return {
+        base_result = {
             "success": all_passed,
             "total_phases": total_phases,
             "completed_phases": completed,
             "phase_results": self.phase_results,
             "iteration_feedback": self.iteration_feedback,
-            "version": "3.1",
+            "version": "4.0",
             "current_version": current_version,
+            "mode": self.mode,
+        }
+
+        role_outputs = {}
+        for rn in self.role_flow.execution_order if self.role_flow else []:
+            r = self.phase_results.get(rn, {})
+            role_outputs[rn] = r.get("output", "")
+
+        base_result["role_outputs"] = role_outputs
+
+        if self.thinking_chain_executor:
+            tc = self.thinking_chain_executor
+            base_result["collected_data"] = dict(tc.state.collected_data)
+
+        if self.mode == "pipeline":
+            base_result["pipeline_output"] = self._build_pipeline_output(
+                task_description, all_passed, role_outputs
+            )
+
+        return base_result
+
+    def _build_pipeline_output(
+        self, task_description: str, all_passed: bool, role_outputs: Dict[str, str]
+    ) -> Dict[str, Any]:
+        summary_parts = []
+        for rn, output in role_outputs.items():
+            summary_parts.append({"role": rn, "summary": output[:500]})
+
+        return {
+            "task": task_description,
+            "status": "success" if all_passed else "partial",
+            "findings": summary_parts,
+            "metadata": {
+                "complexity": self.task_analysis.complexity_score if self.task_analysis else 0,
+                "task_type": self.task_analysis.task_type if self.task_analysis else "unknown",
+                "needs_data_collection": self.task_analysis.needs_data_collection if self.task_analysis else False,
+            },
         }
 
     def _generate_markdown_report(self, task_description: str, all_passed: bool) -> str:
@@ -1172,6 +1413,7 @@ class WorkflowOrchestratorV3Final:
                 [
                     f"- **任务类型**: {self.task_analysis.task_type}",
                     f"- **复杂度评分**: {self.task_analysis.complexity_score}/10",
+                    f"- **分析模式**: {'思考链 (v4.0)' if self.task_analysis.analysis_mode == 'complex_thinking_chain' else '单向流 (v3.1)'}",
                     f"- **预估时间**: {self.task_analysis.estimated_duration}",
                     f"- **推荐角色数**: {self.task_analysis.recommended_roles_count}",
                     "",
@@ -1279,11 +1521,47 @@ class WorkflowOrchestratorV3Final:
                 lines.append(f"{i}. {fb}")
             lines.append("")
 
+        if self.thinking_chain_executor:
+            tc = self.thinking_chain_executor
+            lines.extend(
+                [
+                    "## 思考链执行详情 (v4.0)",
+                    "",
+                    f"- **增量数据采集**: {len(tc.state.data_collection_specs)} 个角色有额外采集需求",
+                    f"- **双向反馈**: 生成 {len(tc.state.resolved_feedback)} 条，待处理 {len(tc.state.pending_feedback)} 条",
+                    f"- **自我反思轮次**: {tc.state.current_reflection_round}/{tc.state.max_reflection_rounds}",
+                    f"- **重新执行次数**: {sum(tc.state.re_execution_count.values())} 次",
+                    "",
+                ]
+            )
+
+            if tc.state.reflection_issues:
+                lines.append("### 反思发现的问题")
+                lines.append("")
+                lines.append("| 严重度 | 类别 | 描述 | 影响角色 |")
+                lines.append("|--------|------|------|----------|")
+                for issue in tc.state.reflection_issues:
+                    roles_str = ", ".join(issue.affected_roles) if issue.affected_roles else "-"
+                    lines.append(
+                        f"| {issue.severity} | {issue.category} | {issue.description[:60]}... | {roles_str} |"
+                    )
+                lines.append("")
+
+            if tc.state.data_collection_specs:
+                lines.append("### 增量数据采集记录")
+                lines.append("")
+                for role_name, spec in tc.state.data_collection_specs.items():
+                    if spec.queries:
+                        lines.append(f"**{role_name}** ({spec.priority}):")
+                        for q in spec.queries[:5]:
+                            lines.append(f"  - {q}")
+                        lines.append("")
+
         lines.extend(
             [
                 "---",
                 "",
-                "*本报告由 BMAD-EVO v3.1 自动生成*",
+                "*本报告由 BMAD-EVO v3.1/v4.0 自动生成*",
             ]
         )
 

@@ -228,11 +228,12 @@ class ModelRouter:
     根据角色特性、任务需求、上下文预算为每个角色选择最优 GLM 模型。
     """
 
-    PRIMARY_MODEL = "glm-4.7"
-    FALLBACK_MODEL = "glm-5.1"
-    ABSOLUTE_FALLBACK = "kimi-coding/k2p5"
-
     def __init__(self):
+        from ..config_loader import get_model_for_component, get_timeout, get_config
+        self.primary_model, self.fallback_model = get_model_for_component("model_router")
+        _cfg = get_config()
+        self.absolute_fallback = _cfg["models"]["absolute_fallback"]
+        self.timeout = get_timeout("model_router")
         self.models = AVAILABLE_MODELS
         logger.info(f"ModelRouter initialized with {len(self.models)} GLM models")
 
@@ -257,18 +258,18 @@ class ModelRouter:
         )
 
         try:
-            result = self._call_model(self.PRIMARY_MODEL, prompt)
-            model_used = self.PRIMARY_MODEL
+            result = self._call_model(self.primary_model, prompt)
+            model_used = self.primary_model
         except Exception as e:
             logger.warning(f"Primary model failed: {e}, using fallback")
             try:
-                result = self._call_model(self.FALLBACK_MODEL, prompt)
-                model_used = self.FALLBACK_MODEL
+                result = self._call_model(self.fallback_model, prompt)
+                model_used = self.fallback_model
             except Exception as e2:
                 logger.error(f"Fallback also failed: {e2}, trying absolute fallback")
                 try:
-                    result = self._call_model(self.ABSOLUTE_FALLBACK, prompt)
-                    model_used = self.ABSOLUTE_FALLBACK
+                    result = self._call_model(self.absolute_fallback, prompt)
+                    model_used = self.absolute_fallback
                 except Exception as e3:
                     logger.error(f"Absolute fallback also failed: {e3}")
                     return self._heuristic_route(
@@ -400,41 +401,8 @@ class ModelRouter:
 """
 
     def _call_model(self, model: str, prompt: str) -> str:
-        import subprocess
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write(prompt)
-            prompt_file = f.name
-
-        try:
-            cmd = [
-                "openclaw",
-                "sessions",
-                "spawn",
-                "--model",
-                model,
-                "--task-file",
-                prompt_file,
-                "--timeout",
-                "120",
-                "--cleanup",
-                "keep",
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=130)
-
-            if result.returncode != 0:
-                raise RuntimeError(f"Model call failed: {result.stderr}")
-
-            return result.stdout
-
-        finally:
-            try:
-                Path(prompt_file).unlink(missing_ok=True)
-            except Exception:
-                pass
+        from ..opencode_adapter import call_model
+        return call_model(model, prompt, timeout=self.timeout)
 
     def _parse_routing_result(
         self,
@@ -470,12 +438,12 @@ class ModelRouter:
                 mappings.append(
                     RoleModelMapping(
                         role_id=role.get("id"),
-                        primary_model="glm-4.7",
-                        fallback_models=["glm-4.7-flash", "glm-5.1"],
+                        primary_model=self.primary_model,
+                        fallback_models=[self.fallback_model],
                         reasoning="Default fallback mapping",
                     )
                 )
-                model_usage["glm-4.7"] = model_usage.get("glm-4.7", 0) + 1
+                model_usage[self.primary_model] = model_usage.get(self.primary_model, 0) + 1
 
         return RoutingResult(
             mappings=mappings,
@@ -530,30 +498,21 @@ class ModelRouter:
             )
 
             if budget_constraint == "low":
-                primary = "glm-4.7-flash"
+                primary = self._pick_model_by_tier("low")
             elif is_architecture or complexity_score >= 8:
-                primary = "glm-5.1"
+                primary = self._pick_model_by_tier("high")
             elif is_code_related and complexity_score >= 6:
-                primary = "glm-5.1"
+                primary = self._pick_model_by_tier("high")
             elif is_code_related:
-                primary = "glm-4.7"
+                primary = self.primary_model
             elif is_multimodal:
-                primary = "glm-4.6v"
+                primary = self._pick_model_by_capability("multimodal")
             elif is_analysis:
-                primary = "glm-4.7"
+                primary = self.primary_model
             else:
-                primary = "glm-4.7"
+                primary = self.primary_model
 
-            if primary == "glm-5.1":
-                fallbacks = ["glm-4.7", "glm-4.7-flash"]
-            elif primary == "glm-4.7":
-                fallbacks = ["glm-4.7-flash", "glm-5.1"]
-            elif primary == "glm-4.7-flash":
-                fallbacks = ["glm-4.7", "glm-4.5-air"]
-            elif primary == "glm-4.6v":
-                fallbacks = ["glm-4.7", "glm-5.1"]
-            else:
-                fallbacks = ["glm-4.7-flash", "glm-4.7"]
+            fallbacks = self._build_fallbacks(primary)
 
             model_usage[primary] = model_usage.get(primary, 0) + 1
 
@@ -569,12 +528,12 @@ class ModelRouter:
                 )
             )
 
-        if "glm-5.1" in model_usage and model_usage["glm-5.1"] > len(roles) / 2:
+        high_tier = [mid for mid, mc in self.models.items() if mc.cost_tier == "high"]
+        low_tier = [mid for mid, mc in self.models.items() if mc.cost_tier == "low"]
+
+        if any(m in model_usage and model_usage[m] > len(roles) / 2 for m in high_tier):
             cost_tier = "high"
-        elif (
-            "glm-4.7-flash" in model_usage
-            and model_usage["glm-4.7-flash"] > len(roles) / 2
-        ):
+        elif any(m in model_usage and model_usage[m] > len(roles) / 2 for m in low_tier):
             cost_tier = "low"
         else:
             cost_tier = "medium"
@@ -609,6 +568,31 @@ class ModelRouter:
 
         return text
 
+    def _pick_model_by_tier(self, tier: str) -> str:
+        for mid, mc in self.models.items():
+            if mc.cost_tier == tier:
+                return mid
+        return self.primary_model
+
+    def _pick_model_by_capability(self, cap: str) -> str:
+        try:
+            capability = ModelCapability(cap)
+        except ValueError:
+            return self.primary_model
+        for mid, mc in self.models.items():
+            if capability in mc.capabilities:
+                return mid
+        return self.primary_model
+
+    def _build_fallbacks(self, primary: str) -> List[str]:
+        fallbacks = []
+        for m in [self.fallback_model, self.primary_model, self.absolute_fallback]:
+            if m != primary and m not in fallbacks:
+                fallbacks.append(m)
+        if not fallbacks:
+            fallbacks = [self.fallback_model]
+        return fallbacks[:2]
+
     def get_model_for_role(
         self, role_id: str, routing_result: RoutingResult
     ) -> Optional[RoleModelMapping]:
@@ -620,8 +604,10 @@ class ModelRouter:
     def get_fallback_chain(
         self, role_id: str, routing_result: Optional[RoutingResult] = None
     ) -> List[str]:
+        default_chain = [self.primary_model, self.fallback_model, self.absolute_fallback]
+
         if routing_result is None:
-            return ["glm-4.7", "glm-4.7-flash", "glm-5.1", "kimi-coding/k2p5"]
+            return default_chain
 
         try:
             mapping = self.get_model_for_role(role_id, routing_result)
@@ -630,7 +616,7 @@ class ModelRouter:
         except Exception:
             pass
 
-        return ["glm-4.7", "glm-4.7-flash", "glm-5.1", "kimi-coding/k2p5"]
+        return default_chain
 
 
 def route_models(

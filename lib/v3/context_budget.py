@@ -15,61 +15,39 @@ import logging
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Any
 
+from ..config_loader import get_config, get_context_window, get_quality_threshold
+
 logger = logging.getLogger(__name__)
 
 
-MODEL_CONTEXT_WINDOWS = {
-    "glm-5.1": {
-        "input": 200000,
-        "output": 128000,
-        "name": "GLM-5.1 旗舰 (推理级)",
-        "tier": "flagship",
-    },
-    "glm-4.7": {
-        "input": 200000,
-        "output": 128000,
-        "name": "GLM-4.7 全能主力",
-        "tier": "standard",
-    },
-    "glm-4.7-flash": {
-        "input": 200000,
-        "output": 128000,
-        "name": "GLM-4.7-Flash 轻量开源",
-        "tier": "lightweight",
-    },
-    "glm-4.7-flashx": {
-        "input": 200000,
-        "output": 128000,
-        "name": "GLM-4.7-FlashX 云端极速",
-        "tier": "fast",
-    },
-    "glm-4.6": {
-        "input": 200000,
-        "output": 128000,
-        "name": "GLM-4.6 上一代主力",
-        "tier": "legacy",
-    },
-    "glm-4.6v": {
-        "input": 128000,
-        "output": 128000,
-        "name": "GLM-4.6V 多模态编码",
-        "tier": "multimodal",
-    },
-    "glm-4.5-air": {
-        "input": 128000,
-        "output": 128000,
-        "name": "GLM-4.5-Air 超轻量",
-        "tier": "ultralight",
-    },
-    "kimi-coding/k2p5": {
-        "input": 200000,
-        "output": 128000,
-        "name": "Kimi K2P5 绝对回退",
-        "tier": "absolute_fallback",
-    },
-}
+def _build_model_context_windows() -> Dict[str, Dict]:
+    cfg = get_config()
+    windows = cfg["models"]["context_windows"]
+    result = {}
+    tier_map = {
+        "glm-5.1": ("GLM-5.1 旗舰 (推理级)", "flagship"),
+        "glm-4.7": ("GLM-4.7 全能主力", "standard"),
+        "glm-4.7-flash": ("GLM-4.7-Flash 轻量开源", "lightweight"),
+        "glm-4.7-flashx": ("GLM-4.7-FlashX 云端极速", "fast"),
+        "glm-4.6": ("GLM-4.6 上一代主力", "legacy"),
+        "glm-4.6v": ("GLM-4.6V 多模态编码", "multimodal"),
+        "glm-4.5-air": ("GLM-4.5-Air 超轻量", "ultralight"),
+        "kimi-coding/k2.6": ("Kimi K2.6 绝对回退", "absolute_fallback"),
+    }
+    for model_id, ctx in windows.items():
+        name, tier = tier_map.get(model_id, (model_id, "unknown"))
+        result[model_id] = {
+            "input": ctx["input"],
+            "output": ctx["output"],
+            "name": name,
+            "tier": tier,
+        }
+    return result
 
-HEADROOM_RATIO = 0.20
+
+MODEL_CONTEXT_WINDOWS = _build_model_context_windows()
+
+HEADROOM_RATIO = get_quality_threshold("context_headroom_ratio", 0.20)
 
 
 @dataclass

@@ -52,8 +52,10 @@ class ValidationResult:
 class OutputQualityValidator:
     """输出质量验证器"""
 
-    def __init__(self, min_score: int = 85):
-        self.min_score = min_score
+    def __init__(self, min_score: Optional[int] = None):
+        from ..config_loader import get_quality_threshold, get_output_validation_config
+        self.min_score = min_score if min_score is not None else get_quality_threshold("pass_threshold", 85)
+        self._validation_cfg = get_output_validation_config()
 
     def validate_report(
         self, report_path: Path, expected_structure: Optional[List[str]] = None
@@ -184,23 +186,25 @@ class OutputQualityValidator:
             )
 
         # 检查H2标题（主要章节）
-        if metrics["h2_count"] < 5:
+        min_h2 = self._validation_cfg.get("min_h2_sections", 5)
+        if metrics["h2_count"] < min_h2:
             issues.append(
                 ValidationIssue(
                     level=ValidationLevel.HIGH,
                     category="completeness",
-                    message=f"报告H2章节过少（{metrics['h2_count']}个），建议至少5个主要章节",
+                    message=f"报告H2章节过少（{metrics['h2_count']}个），建议至少{min_h2}个主要章节",
                     suggestion="增加主要章节，覆盖核心分析维度",
                 )
             )
 
         # 检查H3标题（小节）
-        if metrics["h3_count"] < 10:
+        min_h3 = self._validation_cfg.get("min_h3_sections", 10)
+        if metrics["h3_count"] < min_h3:
             issues.append(
                 ValidationIssue(
                     level=ValidationLevel.MEDIUM,
                     category="completeness",
-                    message=f"报告H3小节过少（{metrics['h3_count']}个），建议至少10个小节",
+                    message=f"报告H3小节过少（{metrics['h3_count']}个），建议至少{min_h3}个小节",
                     suggestion="在每个主要章节下增加详细的小节",
                 )
             )
@@ -228,21 +232,23 @@ class OutputQualityValidator:
 
         # 字数检查
         word_count = metrics["word_count"]
-        if word_count < 5000:
+        min_words = self._validation_cfg.get("min_word_count", 5000)
+        rec_words = self._validation_cfg.get("recommended_word_count", 10000)
+        if word_count < min_words:
             issues.append(
                 ValidationIssue(
                     level=ValidationLevel.CRITICAL,
                     category="quality",
-                    message=f"报告字数过少（{word_count}字），深度分析报告至少需要10,000字",
+                    message=f"报告字数过少（{word_count}字），深度分析报告至少需要{min_words}字",
                     suggestion="增加每个章节的内容深度，添加更多分析、案例和数据",
                 )
             )
-        elif word_count < 10000:
+        elif word_count < rec_words:
             issues.append(
                 ValidationIssue(
                     level=ValidationLevel.HIGH,
                     category="quality",
-                    message=f"报告字数偏少（{word_count}字），深度分析报告建议15,000字以上",
+                    message=f"报告字数偏少（{word_count}字），深度分析报告建议{rec_words}字以上",
                     suggestion="补充各章节的详细分析内容",
                 )
             )
@@ -323,9 +329,9 @@ class OutputQualityValidator:
         sections = self._extract_sections(content)
         short_sections = []
 
+        min_section_chars = self._validation_cfg.get("min_section_chars", 200)
         for section_title, section_content in sections.items():
-            # 每个章节至少200字（降低阈值以适应更长的报告）
-            if len(section_content.strip()) < 200:
+            if len(section_content.strip()) < min_section_chars:
                 short_sections.append(section_title)
 
         if short_sections:
@@ -341,7 +347,8 @@ class OutputQualityValidator:
 
         # 2. 检查是否有具体的数据或数字（深度分析的标志）
         numbers = re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?%?|\d+\.?\d*%", content)
-        if len(numbers) < 20:
+        min_data = self._validation_cfg.get("min_data_points", 20)
+        if len(numbers) < min_data:
             issues.append(
                 ValidationIssue(
                     level=ValidationLevel.HIGH,
@@ -461,24 +468,19 @@ class OutputQualityValidator:
     def _calculate_score(
         self, metrics: Dict[str, Any], issues: List[ValidationIssue]
     ) -> int:
-        """计算总分"""
         score = 100
+        penalties = self._validation_cfg.get("score_penalties", {})
 
         for issue in issues:
-            if issue.level == ValidationLevel.CRITICAL:
-                score -= 20
-            elif issue.level == ValidationLevel.HIGH:
-                score -= 10
-            elif issue.level == ValidationLevel.MEDIUM:
-                score -= 5
-            elif issue.level == ValidationLevel.LOW:
-                score -= 2
+            penalty = penalties.get(issue.level.value, 5)
+            score -= penalty
 
-        # 字数加成
         word_count = metrics.get("word_count", 0)
-        if word_count >= 15000:
+        bonus_words = self._validation_cfg.get("bonus_word_count", 15000)
+        rec_words = self._validation_cfg.get("recommended_word_count", 10000)
+        if word_count >= bonus_words:
             score = min(100, score + 5)
-        elif word_count >= 10000:
+        elif word_count >= rec_words:
             score = min(100, score + 2)
 
         return max(0, score)

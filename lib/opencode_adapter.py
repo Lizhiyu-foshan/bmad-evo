@@ -1,27 +1,31 @@
+# -*- coding: utf-8 -*-
 """
-OpenCode 模型调用适配器
-用于在 OpenCode 环境中直接调用模型，无需依赖 openclaw CLI
+OpenCode Model Adapter
 
-使用方法:
-1. 在 agent_executor.py、task_analyzer.py 等文件中导入此适配器
-2. 替换原有的 _call_model 方法
-3. 通过环境变量或配置文件设置 API 密钥
+Unified model calling interface for BMAD-EVO.
+In OpenCode environment, model calls are handled by the OpenCode agent context.
+
+NOTE: In OpenCode mode, the model is selected by the user in opencode UI.
+The model parameter in call_model() is informational only — it cannot
+override the user's selection. Fallback logic only applies in CLI mode.
 """
 
 import os
 import json
 import logging
-from typing import Optional, Dict, Any, Callable
+import subprocess
+import tempfile
+from typing import Optional, Dict, Any
 from dataclasses import dataclass
 from pathlib import Path
+
+from .config_loader import get_config, get_model_chain_for_component, get_timeout
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ModelResponse:
-    """模型响应"""
-
     text: str
     model: str
     usage: Optional[Dict[str, int]] = None
@@ -30,123 +34,126 @@ class ModelResponse:
 
 class OpenCodeModelAdapter:
     """
-    OpenCode 模型调用适配器
+    OpenCode model adapter
 
-    支持两种调用方式:
-    1. 直接调用（如果在 OpenCode 环境中可以直接使用模型工具）
-    2. API 调用（通过 HTTP API 调用模型）
+    In OpenCode environment (OPENCODE env var set), the agent context
+    handles model calls directly. The adapter outputs structured prompts
+    and the OpenCode runtime processes them.
+
+    Outside OpenCode environment, falls back to opencode CLI if available.
     """
 
-    def __init__(self):
-        self.api_key = os.environ.get("OPENCODE_API_KEY")
-        self.api_base = os.environ.get("OPENCODE_API_BASE", "https://api.opencode.ai")
-        self.use_direct = (
-            os.environ.get("OPENCODE_USE_DIRECT", "true").lower() == "true"
-        )
+    def _get_absolute_fallback(self) -> str:
+        try:
+            return get_config()["models"]["absolute_fallback"]
+        except Exception:
+            return "kimi-coding/k2.6"
 
-        logger.info(f"OpenCodeModelAdapter initialized (direct_mode={self.use_direct})")
+    def __init__(self):
+        self.in_opencode = "OPENCODE" in os.environ or "OPENCODE_VERSION" in os.environ
+        logger.info(f"OpenCodeModelAdapter initialized (in_opencode={self.in_opencode})")
 
     def call_model(
         self,
         model: str,
         prompt: str,
         system_prompt: Optional[str] = None,
-        timeout: int = 120,
-        max_tokens: int = 8000,
+        timeout: Optional[int] = None,
+        max_tokens: Optional[int] = None,
     ) -> ModelResponse:
+        if timeout is None:
+            timeout = get_timeout("opencode_adapter")
+        if max_tokens is None:
+            max_tokens = get_config()["models"]["call_defaults"]["max_tokens"]
         """
-        调用模型
+        Call model
 
-        Args:
-            model: 模型ID (如 'glm-4.7', 'glm-5.1', 'glm-4.7-flash', 'kimi-coding/k2p5' 绝对回退)
-            prompt: 用户提示词
-            system_prompt: 系统提示词（可选）
-            timeout: 超时时间（秒）
-            max_tokens: 最大token数
+        In OpenCode environment: returns the prompt as structured output
+        for the OpenCode agent to process with the specified model.
 
-        Returns:
-            ModelResponse: 模型响应
+        Outside OpenCode: attempts opencode CLI.
         """
-        try:
-            # 在 OpenCode 环境中，可以直接使用 ask_model 工具
-            # 注意：这需要在 OpenCode 的 agent 上下文中运行
-            return self._call_via_opencode(model, prompt, system_prompt, max_tokens)
-        except Exception as e:
-            logger.error(f"Direct model call failed: {e}")
-            return ModelResponse(text="", model=model, error=str(e))
-
-    def _call_via_opencode(
-        self, model: str, prompt: str, system_prompt: Optional[str], max_tokens: int
-    ) -> ModelResponse:
-        """
-        通过 OpenCode 直接调用模型
-
-        这是给 OpenCode agent 使用的接口
-        """
-        # 注意：这段代码在 OpenCode agent 中会被替换为实际的模型调用
-        # 在实际运行时，OpenCode 会自动处理这些工具调用
-
-        # 构建完整的提示词
         full_prompt = prompt
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{prompt}"
 
-        # 这里只是一个占位符
-        # 在 OpenCode 环境中，实际的模型调用会由系统处理
-        return ModelResponse(
-            text=f"[Model {model} would process:\n{full_prompt[:200]}...]", model=model
-        )
+        if self.in_opencode:
+            return self._call_in_opencode_env(model, full_prompt)
+        else:
+            return self._call_via_cli(model, full_prompt, timeout)
 
-
-# 简单的 HTTP API 调用方式（如果需要）
-class HTTPModelClient:
-    """HTTP API 模型客户端"""
-
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        self.api_key = api_key or os.environ.get("OPENCODE_API_KEY")
-        self.base_url = base_url or os.environ.get(
-            "OPENCODE_API_BASE", "https://api.opencode.ai"
-        )
-
-    def call(self, model: str, prompt: str, **kwargs) -> str:
+    def _call_in_opencode_env(self, model: str, prompt: str) -> ModelResponse:
         """
-        通过 HTTP API 调用模型
+        Inside OpenCode environment.
 
-        这需要一个实际的 API 端点
+        The OpenCode agent runtime handles model calls.
+        We output a structured instruction for the agent to process.
         """
-        import requests
+        instruction = (
+            f"[BMAD-EVO Model Call]\n"
+            f"Model: {model}\n"
+            f"Prompt:\n{prompt}"
+        )
+        return ModelResponse(text=instruction, model=model)
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def _call_via_cli(self, model: str, prompt: str, timeout: int) -> ModelResponse:
+        """
+        Outside OpenCode environment: try opencode CLI.
+        Falls back to absolute fallback model on failure.
+        """
+        output = self._run_cli(model, prompt, timeout)
 
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": kwargs.get("max_tokens", 8000),
-        }
+        if output is not None:
+            return ModelResponse(text=output, model=model)
+
+        abs_fallback = self._get_absolute_fallback()
+        if model != abs_fallback:
+            logger.info(f"Trying absolute fallback: {abs_fallback}")
+            output = self._run_cli(abs_fallback, prompt, timeout)
+            if output is not None:
+                return ModelResponse(text=output, model=abs_fallback)
+
+        return ModelResponse(text="", model=model, error="All model calls failed")
+
+    def _run_cli(self, model: str, prompt: str, timeout: int) -> Optional[str]:
+        """Run opencode CLI for model call"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(prompt)
+            prompt_file = f.name
 
         try:
-            response = requests.post(
-                f"{self.base_url}/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=kwargs.get("timeout", 120),
+            cmd = [
+                "opencode",
+                "--model", model,
+                "--task-file", prompt_file,
+                "--timeout", str(timeout),
+            ]
+
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout + 30
             )
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
+
+            if result.returncode != 0:
+                raise RuntimeError(f"Model call failed: {result.stderr}")
+
+            return result.stdout
+
         except Exception as e:
-            raise RuntimeError(f"API call failed: {e}")
+            logger.error(f"CLI call failed for {model}: {e}")
+            return None
+        finally:
+            try:
+                Path(prompt_file).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
-# 全局适配器实例
 _model_adapter: Optional[OpenCodeModelAdapter] = None
 
 
 def get_model_adapter() -> OpenCodeModelAdapter:
-    """获取全局模型适配器实例"""
     global _model_adapter
     if _model_adapter is None:
         _model_adapter = OpenCodeModelAdapter()
@@ -154,29 +161,18 @@ def get_model_adapter() -> OpenCodeModelAdapter:
 
 
 def set_model_adapter(adapter: OpenCodeModelAdapter):
-    """设置全局模型适配器"""
     global _model_adapter
     _model_adapter = adapter
 
 
-# 便捷函数
 def call_model(
     model: str,
     prompt: str,
     system_prompt: Optional[str] = None,
-    timeout: int = 120,
-    max_tokens: int = 8000,
+    timeout: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
-    """
-    便捷函数：调用模型
-
-    使用示例:
-        result = call_model(
-            model="glm-4.7",
-            prompt="请分析这段代码...",
-            system_prompt="你是一个代码审查专家"
-        )
-    """
+    """Convenience function: call model"""
     adapter = get_model_adapter()
     response = adapter.call_model(model, prompt, system_prompt, timeout, max_tokens)
 
@@ -186,25 +182,21 @@ def call_model(
     return response.text
 
 
-# 环境检查
 def check_environment() -> Dict[str, Any]:
-    """检查 OpenCode 环境配置"""
-    return {
-        "api_key_set": bool(os.environ.get("OPENCODE_API_KEY")),
-        "api_base": os.environ.get("OPENCODE_API_BASE", "default"),
-        "use_direct": os.environ.get("OPENCODE_USE_DIRECT", "true").lower() == "true",
-        "in_opencode": "OPENCODE" in os.environ or "OPENCODE_VERSION" in os.environ,
-    }
+    """Check OpenCode environment configuration"""
+    in_opencode = "OPENCODE" in os.environ or "OPENCODE_VERSION" in os.environ
 
-
-if __name__ == "__main__":
-    # 测试
-    print("OpenCode Model Adapter")
-    print(f"Environment: {check_environment()}")
-
-    # 测试调用
+    opencode_available = False
     try:
-        result = call_model(model="glm-4.7", prompt="Hello, this is a test.")
-        print(f"Result: {result}")
-    except Exception as e:
-        print(f"Test failed: {e}")
+        result = subprocess.run(
+            ["opencode", "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        opencode_available = result.returncode == 0
+    except Exception:
+        pass
+
+    return {
+        "in_opencode_env": in_opencode,
+        "opencode_cli_available": opencode_available,
+    }

@@ -12,12 +12,12 @@ BMAD-EVO v3.0 - DynamicRoleGenerator
 
 import json
 import logging
-import subprocess
-import tempfile
 import time
 from dataclasses import dataclass, asdict, field
-from pathlib import Path
+
 from typing import Dict, List, Optional, Any
+
+from ..config_loader import get_model_for_component, get_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,8 @@ class RoleDefinition:
     estimated_time: str
     required_skills: List[str]
     model_requirement: str  # 对模型的要求描述
+    data_collection_needs: List[str] = field(default_factory=list)
+    feedback_channels: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -55,6 +57,7 @@ class RoleFlow:
     model_used: str = ""
     execution_time: float = 0.0
     error: Optional[str] = None
+    analysis_mode: str = "simple"
 
     @property
     def total_roles(self) -> int:
@@ -73,6 +76,7 @@ class RoleFlow:
             "model_used": self.model_used,
             "execution_time": self.execution_time,
             "error": self.error,
+            "analysis_mode": self.analysis_mode,
         }
 
 
@@ -82,12 +86,10 @@ class DynamicRoleGenerator:
     完全由模型驱动，根据任务动态生成最适合的角色流程
     """
 
-    PRIMARY_MODEL = "glm-4.7"
-    FALLBACK_MODEL = "glm-5.1"
-
-    def __init__(self, timeout: int = 180):
-        self.timeout = timeout
-        logger.info(f"DynamicRoleGenerator initialized (primary: {self.PRIMARY_MODEL})")
+    def __init__(self, timeout: int = None):
+        self.primary_model, self.fallback_model = get_model_for_component("role_generator")
+        self.timeout = timeout if timeout is not None else get_timeout("role_generator")
+        logger.info(f"DynamicRoleGenerator initialized (primary: {self.primary_model})")
 
     def generate(
         self, task_description: str, task_analysis: Dict[str, Any]
@@ -110,15 +112,15 @@ class DynamicRoleGenerator:
         # 尝试主模型
         start_time = time.time()
         try:
-            result = self._call_model(self.PRIMARY_MODEL, prompt)
-            model_used = self.PRIMARY_MODEL
+            result = self._call_model(self.primary_model, prompt)
+            model_used = self.primary_model
         except Exception as e:
             logger.warning(
-                f"Primary model failed: {e}, falling back to {self.FALLBACK_MODEL}"
+                f"Primary model failed: {e}, falling back to {self.fallback_model}"
             )
             try:
-                result = self._call_model(self.FALLBACK_MODEL, prompt)
-                model_used = self.FALLBACK_MODEL
+                result = self._call_model(self.fallback_model, prompt)
+                model_used = self.fallback_model
             except Exception as e2:
                 logger.error(f"Fallback model also failed: {e2}")
                 execution_time = time.time() - start_time
@@ -197,6 +199,8 @@ class DynamicRoleGenerator:
 - estimated_time: 预计执行时间（如"10-15分钟"）
 - required_skills: 所需技能列表
 - model_requirement: 对AI模型的要求描述
+- data_collection_needs: 该角色执行时需要额外采集的数据/信息（列表），用于v4.0增量采集
+- feedback_channels: 该角色需要向哪些角色提供反馈（列表），用于v4.0双向反馈
 
 ## 输出格式 (JSON)
 
@@ -214,7 +218,9 @@ class DynamicRoleGenerator:
       "can_parallel": false,
       "estimated_time": "10-15分钟",
       "required_skills": ["requirements_analysis", "domain_knowledge"],
-      "model_requirement": "强逻辑推理能力，能准确理解需求"
+      "model_requirement": "强逻辑推理能力，能准确理解需求",
+      "data_collection_needs": [],
+      "feedback_channels": []
     }}
   ],
   "execution_order": ["requirement_analyst", "solution_designer", "developer"],
@@ -226,43 +232,14 @@ class DynamicRoleGenerator:
 - 角色之间必须有清晰的输入输出关系
 - 只有真正可以独立进行的任务才标记为并行
 - 保持角色精简，不要过度拆分
+- data_collection_needs: 列出该角色分析时需要的特定数据源/信息（非初始采集覆盖的）
+- feedback_channels: 列出该角色分析后可能需要反馈的角色名（双向通信）
 """
 
     def _call_model(self, model: str, prompt: str) -> str:
-        """调用模型"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write(prompt)
-            prompt_file = f.name
-
-        try:
-            cmd = [
-                "openclaw",
-                "sessions",
-                "spawn",
-                "--model",
-                model,
-                "--task-file",
-                prompt_file,
-                "--timeout",
-                str(self.timeout),
-                "--cleanup",
-                "keep",
-            ]
-
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout + 10
-            )
-
-            if result.returncode != 0:
-                raise RuntimeError(f"Model call failed: {result.stderr}")
-
-            return result.stdout
-
-        finally:
-            try:
-                Path(prompt_file).unlink(missing_ok=True)
-            except Exception:
-                pass
+        """Call model via opencode adapter"""
+        from ..opencode_adapter import call_model
+        return call_model(model, prompt, timeout=self.timeout)
 
     def _parse_flow_result(
         self,
@@ -296,6 +273,8 @@ class DynamicRoleGenerator:
                 estimated_time=role_data.get("estimated_time", "10分钟"),
                 required_skills=role_data.get("required_skills", []),
                 model_requirement=role_data.get("model_requirement", "通用能力"),
+                data_collection_needs=role_data.get("data_collection_needs", []),
+                feedback_channels=role_data.get("feedback_channels", []),
             )
             roles.append(role)
 
@@ -309,6 +288,7 @@ class DynamicRoleGenerator:
             rationale=data.get("rationale", "动态生成"),
             model_used=model_used,
             execution_time=execution_time,
+            analysis_mode=task_analysis.get("analysis_mode", "simple"),
         )
 
     def _create_fallback_flow(
@@ -427,7 +407,7 @@ class DynamicRoleGenerator:
 
 # 便捷函数
 def generate_roles(
-    task_description: str, task_analysis: Dict[str, Any], timeout: int = 180
+    task_description: str, task_analysis: Dict[str, Any], timeout: int = None
 ) -> RoleFlow:
     """
     便捷函数：生成角色流程
@@ -452,7 +432,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--complexity", type=int, default=5, help="Complexity score (1-10)"
     )
-    parser.add_argument("--timeout", type=int, default=180, help="Timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=None, help="Timeout in seconds")
 
     args = parser.parse_args()
 

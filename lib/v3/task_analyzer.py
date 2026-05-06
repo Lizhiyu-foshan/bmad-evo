@@ -13,12 +13,12 @@ BMAD-EVO v3.0 - TaskAnalyzer
 
 import json
 import logging
-import subprocess
-import tempfile
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+from ..config_loader import get_model_for_component, get_timeout, get_config, determine_analysis_mode
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,8 @@ class TaskAnalysis:
     model_used: str = ""
     execution_time: float = 0.0
     error: Optional[str] = None
+    analysis_mode: str = "simple"
+    needs_data_collection: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -49,13 +51,10 @@ class TaskAnalyzer:
     完全由模型驱动，零硬编码规则
     """
 
-    # 主模型和回退模型
-    PRIMARY_MODEL = "glm-4.7"
-    FALLBACK_MODEL = "glm-5.1"
-
-    def __init__(self, timeout: int = 120):
-        self.timeout = timeout
-        logger.info(f"TaskAnalyzer initialized (primary: {self.PRIMARY_MODEL})")
+    def __init__(self, timeout: int = None):
+        self.primary_model, self.fallback_model = get_model_for_component("task_analyzer")
+        self.timeout = timeout if timeout is not None else get_timeout("task_analyzer")
+        logger.info(f"TaskAnalyzer initialized (primary: {self.primary_model})")
 
     def analyze(self, task_description: str) -> TaskAnalysis:
         """
@@ -75,15 +74,15 @@ class TaskAnalyzer:
         # 尝试主模型
         start_time = time.time()
         try:
-            result = self._call_model(self.PRIMARY_MODEL, prompt)
-            model_used = self.PRIMARY_MODEL
+            result = self._call_model(self.primary_model, prompt)
+            model_used = self.primary_model
         except Exception as e:
             logger.warning(
-                f"Primary model failed: {e}, falling back to {self.FALLBACK_MODEL}"
+                f"Primary model failed: {e}, falling back to {self.fallback_model}"
             )
             try:
-                result = self._call_model(self.FALLBACK_MODEL, prompt)
-                model_used = self.FALLBACK_MODEL
+                result = self._call_model(self.fallback_model, prompt)
+                model_used = self.fallback_model
             except Exception as e2:
                 logger.error(f"Fallback model also failed: {e2}")
                 execution_time = time.time() - start_time
@@ -99,6 +98,7 @@ class TaskAnalyzer:
                     model_used="none",
                     execution_time=execution_time,
                     error=f"Both models failed: {e}, {e2}",
+                    needs_data_collection=False,
                 )
 
         execution_time = time.time() - start_time
@@ -127,6 +127,7 @@ class TaskAnalyzer:
                 model_used=model_used,
                 execution_time=execution_time,
                 error=str(e),
+                needs_data_collection=False,
             )
 
     def _build_analysis_prompt(self, task_description: str) -> str:
@@ -146,6 +147,7 @@ class TaskAnalyzer:
 5. **estimated_duration**: 预估完成时间（如："1小时", "1-2天", "1周"）
 6. **risk_factors**: 风险因素列表
 7. **success_criteria**: 成功标准列表
+8. **needs_data_collection**: 该任务是否需要采集实时/外部数据才能完成高质量分析（布尔值）。例如：市场分析、经济预测、新闻事件分析 → true；代码重构、算法优化、内部系统设计 → false
 
 ## 复杂度评估指南
 - 1-3分: 简单任务（如：文件格式转换、简单数据处理、单函数实现）→ 1-2个角色
@@ -157,63 +159,25 @@ class TaskAnalyzer:
 必须返回有效的 JSON，不要包含任何其他文字：
 
 ```json
-{{
+{{{{
   "task_type": "任务类型",
   "complexity_score": 5,
   "recommended_roles_count": 3,
   "key_skills": ["skill1", "skill2"],
   "estimated_duration": "1-2天",
   "risk_factors": ["风险1", "风险2"],
-  "success_criteria": ["标准1", "标准2"]
-}}
+  "success_criteria": ["标准1", "标准2"],
+  "needs_data_collection": false
+}}}}
 ```
 """
 
     def _call_model(self, model: str, prompt: str) -> str:
         """
-        调用模型 API
-
-        使用 openclaw sessions spawn 调用模型
+        Call model via opencode adapter
         """
-        # 创建临时文件存储提示词
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write(prompt)
-            prompt_file = f.name
-
-        try:
-            # 构建命令
-            cmd = [
-                "openclaw",
-                "sessions",
-                "spawn",
-                "--model",
-                model,
-                "--task-file",
-                prompt_file,
-                "--timeout",
-                str(self.timeout),
-                "--cleanup",
-                "keep",
-            ]
-
-            logger.debug(f"Calling model: {model}")
-
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout + 10
-            )
-
-            if result.returncode != 0:
-                error_msg = result.stderr or "Unknown error"
-                raise RuntimeError(f"Model call failed: {error_msg}")
-
-            return result.stdout
-
-        finally:
-            # 清理临时文件
-            try:
-                Path(prompt_file).unlink(missing_ok=True)
-            except Exception:
-                pass
+        from ..opencode_adapter import call_model
+        return call_model(model, prompt, timeout=self.timeout)
 
     def _parse_analysis_result(
         self,
@@ -243,6 +207,7 @@ class TaskAnalyzer:
                 success_criteria=["complete_task"],
                 model_used=model_used,
                 execution_time=execution_time,
+                needs_data_collection=False,
             )
 
         # 提取字段，使用默认值
@@ -250,6 +215,8 @@ class TaskAnalyzer:
         roles_count = data.get(
             "recommended_roles_count", self._estimate_roles(complexity)
         )
+
+        analysis_mode = self._determine_analysis_mode(complexity)
 
         return TaskAnalysis(
             task_description=task_description,
@@ -262,6 +229,8 @@ class TaskAnalyzer:
             success_criteria=data.get("success_criteria", []),
             model_used=model_used,
             execution_time=execution_time,
+            analysis_mode=analysis_mode,
+            needs_data_collection=bool(data.get("needs_data_collection", False)),
         )
 
     def _extract_json(self, text: str) -> str:
@@ -293,15 +262,20 @@ class TaskAnalyzer:
         return max(min_val, min(max_val, value))
 
     def _estimate_roles(self, complexity: int) -> int:
-        """根据复杂度估算角色数量"""
-        if complexity <= 3:
-            return 2
-        elif complexity <= 6:
-            return 3
-        elif complexity <= 8:
-            return 4
-        else:
-            return 5
+        """根据复杂度估算角色数量（从配置的范围中取中间值）"""
+        from ..config_loader import get_complexity_to_roles
+        mapping = get_complexity_to_roles()
+        for tier_name, tier in mapping.items():
+            if complexity <= tier["max_complexity"]:
+                return (tier["min_roles"] + tier["max_roles"]) // 2
+        last = list(mapping.values())[-1]
+        return (last["min_roles"] + last["max_roles"]) // 2
+
+    def _determine_analysis_mode(self, complexity: int) -> str:
+        """
+        根据复杂度确定分析模式（从配置读取阈值）
+        """
+        return determine_analysis_mode(complexity)
 
 
 # 便捷函数

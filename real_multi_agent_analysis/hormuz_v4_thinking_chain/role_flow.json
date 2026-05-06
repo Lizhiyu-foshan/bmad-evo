@@ -1,0 +1,16 @@
+{
+  "task_id": "hormuz_v4_tc_v2",
+  "framework": "BMAD-EVO v4.0 (Thinking Chain)",
+  "execution_mode": "complex_thinking_chain",
+  "data_grounding": "data_snapshot.json",
+  "roles": [
+    {"id": "role-001", "name": "geopolitical_analyst", "order": 1, "input_from": [], "output_to": ["role-002", "role-003"]},
+    {"id": "role-002", "name": "military_strategist", "order": 2, "input_from": ["role-001"], "output_to": ["role-006", "role-007"], "parallel_with": "role-003"},
+    {"id": "role-003", "name": "energy_economist", "order": 2, "input_from": ["role-001"], "output_to": ["role-004", "role-005"], "parallel_with": "role-002"},
+    {"id": "role-004", "name": "commodity_analyst", "order": 3, "input_from": ["role-002", "role-003"], "output_to": ["role-005", "role-006"]},
+    {"id": "role-005", "name": "fed_policy_analyst", "order": 4, "input_from": ["role-003", "role-004"], "output_to": ["role-006"]},
+    {"id": "role-006", "name": "financial_market_strategist", "order": 5, "input_from": ["role-001", "role-002", "role-004", "role-005"], "output_to": ["role-007"]},
+    {"id": "role-007", "name": "risk_manager", "order": 6, "input_from": ["role-002", "role-004", "role-005", "role-006"], "output_to": []}
+  ],
+  "parallel_groups": [["role-002", "role-003"]]
+}

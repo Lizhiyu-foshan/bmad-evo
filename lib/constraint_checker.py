@@ -152,9 +152,10 @@ class ConstraintChecker:
     - Strict mode: AST + regex checks (comprehensive)
     """
     
-    PASS_THRESHOLD = 85
     
     def __init__(self, constraints_yaml: Dict[str, Any], mode: str = "strict"):
+        from config_loader import get_quality_threshold
+        self.PASS_THRESHOLD = get_quality_threshold("pass_threshold", 85)
         """
         Initialize checker
         

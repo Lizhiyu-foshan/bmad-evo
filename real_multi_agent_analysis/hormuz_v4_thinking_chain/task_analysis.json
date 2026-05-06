@@ -1,0 +1,10 @@
+{
+  "task_description": "分析霍尔木兹海峡持续被伊朗和美国进行交叉封锁引发的地缘政治环境变化，以及对国际大宗商品（油价、农产品、化工产品）和黄金价格的影响，以及对美联储降息的冲击。预测半年后对股市、债市、大宗商品的影响。",
+  "task_type": "geopolitical_economic_analysis",
+  "complexity_score": 9,
+  "analysis_mode": "complex_thinking_chain",
+  "framework_version": "4.0",
+  "recommended_roles_count": 7,
+  "real_time_data_source": "data_snapshot.json (2026-05-06 web fetch)",
+  "created_at": "2026-05-06"
+}

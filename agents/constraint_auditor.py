@@ -32,8 +32,10 @@ class ConstraintAuditor:
     - History tracking: Audit logs for analysis
     """
     
-    PASS_THRESHOLD = 85
-    MAX_RETRIES = 3
+    def __init__(self, project_path: str):
+        from config_loader import get_quality_threshold, get_max_retries
+        self.pass_threshold = get_quality_threshold("pass_threshold", 85)
+        self.max_retries = get_max_retries("constraint_audit", 3)
     
     def __init__(self, project_path: str):
         self.project_path = Path(project_path)
@@ -71,7 +73,7 @@ class ConstraintAuditor:
         Returns:
             AuditResult with pass/fail status
         """
-        print(f"\n🔍 开始约束审计 (阶段: {phase}, 尝试: {attempt}/{self.MAX_RETRIES})")
+        print(f"\n🔍 开始约束审计 (阶段: {phase}, 尝试: {attempt}/{self.max_retries})")
         print("-" * 60)
         
         # Use checker or default
@@ -110,7 +112,7 @@ class ConstraintAuditor:
         if result.passed:
             return False, "stop"
         
-        if attempt >= self.MAX_RETRIES:
+        if attempt >= self.max_retries:
             return False, "stop"
         
         # Attempt 1-2: Same model (K2.5)

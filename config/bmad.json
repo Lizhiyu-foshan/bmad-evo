@@ -1,0 +1,122 @@
+{
+  "system": {
+    "role": "analysis_terminal",
+    "output_format": "auto",
+    "language": "auto",
+    "interactive": true
+  },
+  "models": {
+    "_note": "OpenCode 模式下这些配置无效（模型由用户在 opencode 中选择）。仅在 CLI/API 模式下生效。",
+    "primary": "glm-5.1",
+    "secondary": "glm-4.7",
+    "absolute_fallback": "kimi-coding/k2.6",
+    "fallback_chain": ["glm-5.1", "glm-4.7", "kimi-coding/k2.6"],
+    "overrides": {},
+    "context_windows": {
+      "glm-5.1":          { "input": 200000, "output": 128000 },
+      "glm-4.7":          { "input": 200000, "output": 128000 },
+      "glm-4.7-flash":    { "input": 200000, "output": 128000 },
+      "glm-4.6":          { "input": 200000, "output": 128000 },
+      "glm-4.6v":         { "input": 128000, "output": 128000 },
+      "kimi-coding/k2.6": { "input": 200000, "output": 128000 }
+    },
+    "context_windows_defaults": { "input": 100000, "output": 32000 },
+    "call_defaults": {
+      "max_tokens": 8000,
+      "timeout": 120
+    }
+  },
+  "execution": {
+    "mode": "opencode",
+    "cli": {
+      "command": "opencode",
+      "extra_buffer_timeout": 30,
+      "version_check_timeout": 10
+    }
+  },
+  "analysis": {
+    "mode": "auto",
+    "thinking_chain_complexity_threshold": 7,
+    "thinking_chain": {
+      "incremental_data_collection": true,
+      "bidirectional_feedback": true,
+      "self_reflection": true,
+      "max_re_executions_per_role": 2,
+      "max_reflection_rounds": 2,
+      "data_collection_timeout": 120,
+      "feedback_timeout": 120,
+      "reflection_timeout": 180
+    },
+    "complexity_to_roles": {
+      "simple":       { "max_complexity": 3, "min_roles": 1, "max_roles": 2 },
+      "medium":       { "max_complexity": 6, "min_roles": 3, "max_roles": 4 },
+      "complex":      { "max_complexity": 8, "min_roles": 5, "max_roles": 6 },
+      "very_complex": { "max_complexity": 10, "min_roles": 7, "max_roles": 8 }
+    }
+  },
+  "quality": {
+    "pass_threshold": 85,
+    "force_proceed_min_score": 70,
+    "relax_step": 10,
+    "relax_floor": 60,
+    "max_iterations": 5,
+    "max_retries": 3,
+    "context_headroom_ratio": 0.20,
+    "output_validation": {
+      "min_word_count": 5000,
+      "recommended_word_count": 10000,
+      "bonus_word_count": 15000,
+      "min_h2_sections": 5,
+      "min_h3_sections": 10,
+      "min_section_chars": 200,
+      "min_data_points": 20,
+      "min_analysis_keywords": 5,
+      "min_recommendation_keywords": 5,
+      "min_content_density": 0.6,
+      "min_avg_line_length": 50,
+      "score_penalties": {
+        "CRITICAL": 20,
+        "HIGH": 10,
+        "MEDIUM": 5,
+        "LOW": 2
+      }
+    }
+  },
+  "paths": {
+    "analysis_output_dir": "real_multi_agent_analysis",
+    "pipeline_output_method": "file",
+    "pipeline_output_file": "analysis_output.json",
+    "analysis_doc_subdir": "docs",
+    "code_output_subdir": "src",
+    "bmad_dir": ".bmad",
+    "versions_dir": ".bmad/versions",
+    "decisions_dir": ".bmad/decisions",
+    "checkpoints_dir": ".bmad/checkpoints",
+    "reports_dir": ".bmad/reports",
+    "constraints_dir": ".bmad/constraints",
+    "logs_dir": ".bmad/logs",
+    "default_project_path": "./analysis_output"
+  },
+  "code_constraints": {
+    "max_function_lines": 50,
+    "max_file_lines": 500,
+    "min_variable_length": 2,
+    "check_null": true,
+    "check_empty": true,
+    "check_io": true,
+    "check_network": true,
+    "no_bare_except": true,
+    "check_secrets": true,
+    "no_hardcoded_keys": true
+  },
+  "timeouts": {
+    "task_analyzer": 120,
+    "role_generator": 180,
+    "model_router": 120,
+    "agent_execution": 600,
+    "resilient_executor": 600,
+    "opencode_adapter": 120
+  },
+  "version": "4.0.0",
+  "config_schema_version": 1
+}

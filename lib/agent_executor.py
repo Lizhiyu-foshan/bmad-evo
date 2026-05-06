@@ -1,10 +1,9 @@
 """
 BMAD-EVO Agent Executor
-提供真实的 Agent 调用能力，支持多模型角色执行
 
-支持两种模式：
-1. OpenClaw 模式：通过 sessions_spawn 调用远程 Agent
-2. 本地模式：直接调用本地模型 API（fallback）
+Supports two modes:
+1. OpenCode mode: call models via opencode adapter (recommended)
+2. Local mode: for testing with BMAD_EVO_USE_MOCK=1
 """
 
 import json
@@ -17,19 +16,35 @@ import subprocess
 import tempfile
 import os
 
+from .config_loader import get_config, get_model_for_component, get_timeout
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class AgentConfig:
-    """Agent 配置"""
-
     name: str
-    model: str
-    description: str
-    system_prompt: str
-    timeout: int = 300  # 5分钟默认超时
-    max_tokens: int = 8000
+    model: Optional[str] = None
+    description: str = ""
+    system_prompt: str = ""
+    timeout: Optional[int] = None
+    max_tokens: Optional[int] = None
+
+    def get_effective_model(self) -> str:
+        if self.model:
+            return self.model
+        primary, _ = get_model_for_component("agent_execution")
+        return primary
+
+    def get_effective_timeout(self) -> int:
+        if self.timeout is not None:
+            return self.timeout
+        return get_timeout("agent_execution")
+
+    def get_effective_max_tokens(self) -> int:
+        if self.max_tokens is not None:
+            return self.max_tokens
+        return get_config()["models"]["call_defaults"]["max_tokens"]
 
 
 @dataclass
@@ -48,7 +63,7 @@ class AgentResult:
 DEFAULT_AGENTS = {
     "analyst": AgentConfig(
         name="analyst",
-        model="glm-4.7",
+        model=None,
         description="需求分析师 - 分析需求并提取关键信息",
         system_prompt="""你是 BMAD-EVO 框架中的需求分析师。
 你的职责是：
@@ -65,7 +80,7 @@ DEFAULT_AGENTS = {
     ),
     "pm": AgentConfig(
         name="pm",
-        model="glm-5.1",
+        model=None,
         description="产品经理 - 制定产品规划和里程碑",
         system_prompt="""你是 BMAD-EVO 框架中的产品经理。
 你的职责是：
@@ -81,7 +96,7 @@ DEFAULT_AGENTS = {
     ),
     "architect": AgentConfig(
         name="architect",
-        model="glm-5.1",
+        model=None,
         description="架构师 - 设计系统架构和技术选型",
         system_prompt="""你是 BMAD-EVO 框架中的系统架构师。
 你的职责是：
@@ -98,7 +113,7 @@ DEFAULT_AGENTS = {
     ),
     "ux": AgentConfig(
         name="ux",
-        model="glm-4.6v",
+        model=None,
         description="UX设计师 - 设计用户交互流程",
         system_prompt="""你是 BMAD-EVO 框架中的UX设计师。
 你的职责是：
@@ -114,7 +129,7 @@ DEFAULT_AGENTS = {
     ),
     "development": AgentConfig(
         name="development",
-        model="glm-5.1",
+        model=None,
         description="开发工程师 - 编写高质量代码",
         system_prompt="""你是 BMAD-EVO 框架中的开发工程师。
 你的职责是：
@@ -138,7 +153,7 @@ DEFAULT_AGENTS = {
     ),
     "qa": AgentConfig(
         name="qa",
-        model="glm-4.7-flash",
+        model=None,
         description="QA工程师 - 测试用例设计和执行",
         system_prompt="""你是 BMAD-EVO 框架中的QA工程师。
 你的职责是：
@@ -176,11 +191,11 @@ class AgentExecutor:
     负责调用不同模型执行各阶段任务
     """
 
-    def __init__(self, project_path: str, mode: str = "openclaw"):
+    def __init__(self, project_path: str, mode: str = "opencode"):
         """
         Args:
-            project_path: 项目路径
-            mode: 执行模式 - "openclaw" 或 "local"
+            project_path: project path
+            mode: execution mode - "opencode" or "local"
         """
         self.project_path = Path(project_path)
         self.mode = mode
@@ -214,7 +229,7 @@ class AgentExecutor:
         # 通用配置
         return AgentConfig(
             name=phase,
-            model="glm-4.7",
+            model=config.get_effective_model(),
             description=f"{phase} 阶段执行者",
             system_prompt=f"你是 BMAD-EVO 框架中的 {phase} 阶段执行者。请根据上下文完成相应任务。",
         )
@@ -235,14 +250,14 @@ class AgentExecutor:
         """
         config = self.get_agent_config(phase)
 
-        logger.info(f"Executing agent: {phase} (model: {config.model})")
+        logger.info(f"Executing agent: {phase} (model: {config.get_effective_model()})")
 
         # 构建提示词
         prompt = self._build_prompt(phase, config, context, retry_feedback)
 
         # 根据模式执行
-        if self.mode == "openclaw":
-            return self._execute_openclaw(config, prompt)
+        if self.mode == "opencode":
+            return self._execute_opencode(config, prompt)
         else:
             return self._execute_local(config, prompt)
 
@@ -282,162 +297,62 @@ class AgentExecutor:
 
         return "\n".join(parts)
 
-    def _execute_openclaw(self, config: AgentConfig, prompt: str) -> AgentResult:
-        """通过 OpenClaw sessions_spawn 执行"""
+    def _execute_opencode(self, config: AgentConfig, prompt: str) -> AgentResult:
+        """Execute via OpenCode adapter"""
         import time
 
         start_time = time.time()
 
         try:
-            task_file = self._create_openclaw_task_file(prompt, config)
-            self._verify_openclaw_available()
-            cmd = self._build_openclaw_command(prompt, config)
-
-            logger.info(f"Executing: {' '.join(cmd)}")
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=config.timeout + 30,
+            from opencode_adapter import call_model
+            output = call_model(
+                model=config.get_effective_model(),
+                prompt=prompt,
+                timeout=config.get_effective_timeout(),
+                max_tokens=config.get_effective_max_tokens(),
             )
 
             execution_time = time.time() - start_time
 
-            if result.returncode == 0:
-                return self._handle_openclaw_success(
-                    result.stdout, config, execution_time
-                )
-            else:
-                return self._handle_openclaw_failure(result, config, execution_time)
+            output_file = self.agents_dir / f"{config.name}_output.txt"
+            output_file.write_text(output, encoding="utf-8")
 
-        except subprocess.TimeoutExpired:
-            execution_time = time.time() - start_time
-            logger.error(f"OpenClaw execution timeout after {config.timeout}s")
             return AgentResult(
-                success=False,
-                output="",
-                model_used=config.model,
+                success=True,
+                output=output,
+                model_used=config.get_effective_model(),
                 execution_time=execution_time,
-                error=f"Timeout after {config.timeout}s",
             )
-        except RuntimeError:
-            raise
+
         except Exception as e:
             execution_time = time.time() - start_time
-            logger.error(f"OpenClaw execution error: {e}")
+            logger.error(f"OpenCode execution error: {e}")
             return AgentResult(
                 success=False,
                 output="",
-                model_used=config.model,
+                model_used=config.get_effective_model(),
                 execution_time=execution_time,
                 error=str(e),
             )
 
-    def _create_openclaw_task_file(self, prompt: str, config: AgentConfig) -> Path:
-        """创建 OpenClaw 任务文件"""
-        task_file = (
-            self.agents_dir
-            / f"{config.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        )
-
-        task_data = {
-            "task": prompt,
-            "model": config.model,
-            "agent_id": f"bmad-{config.name}",
-            "timeout": config.timeout,
-            "max_tokens": config.max_tokens,
-        }
-
-        with open(task_file, "w", encoding="utf-8") as f:
-            json.dump(task_data, f, ensure_ascii=False, indent=2)
-
-        logger.info(f"Task saved to: {task_file}")
-        return task_file
-
-    def _verify_openclaw_available(self):
-        """验证 OpenClaw CLI 是否可用"""
-        result = subprocess.run(["which", "openclaw"], capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise RuntimeError(
-                "OpenClaw CLI not found. Cannot execute agent in 'openclaw' mode.\n"
-                "Please ensure:\n"
-                "1. OpenClaw is installed and 'openclaw' command is in PATH\n"
-                "2. Or explicitly use mode='local' for testing (not recommended for production)\n"
-                "3. Or implement a real AI client (e.g., direct API call) instead of mock"
-            )
-
-    def _build_openclaw_command(self, prompt: str, config: AgentConfig) -> List[str]:
-        """构建 OpenClaw 命令"""
-        return [
-            "openclaw",
-            "sessions",
-            "spawn",
-            "--task",
-            prompt,
-            "--model",
-            config.model,
-            "--agent-id",
-            f"bmad-{config.name}",
-            "--timeout",
-            str(config.timeout),
-            "--cleanup",
-            "keep",
-        ]
-
-    def _handle_openclaw_success(
-        self, output: str, config: AgentConfig, execution_time: float
-    ) -> AgentResult:
-        """处理 OpenClaw 执行成功"""
-        output_file = self.agents_dir / f"{config.name}_output.txt"
-        output_file.write_text(output, encoding="utf-8")
-
-        return AgentResult(
-            success=True,
-            output=output,
-            model_used=config.model,
-            execution_time=execution_time,
-        )
-
-    def _handle_openclaw_failure(
-        self,
-        result: subprocess.CompletedProcess,
-        config: AgentConfig,
-        execution_time: float,
-    ) -> AgentResult:
-        """处理 OpenClaw 执行失败"""
-        error_msg = result.stderr or "Unknown error"
-        logger.error(f"OpenClaw execution failed: {error_msg}")
-
-        return AgentResult(
-            success=False,
-            output="",
-            model_used=config.model,
-            execution_time=execution_time,
-            error=error_msg,
-        )
-
     def _execute_local(self, config: AgentConfig, prompt: str) -> AgentResult:
         """
-        本地模式执行（仅用于测试或作为真实API调用的模板）
+        Local mode execution (for testing only)
 
-        WARNING: 此方法不再生成模拟数据。要实现真实的本地执行，请：
-        1. 使用 OpenClaw 模式（推荐）
-        2. 或直接调用模型API（需实现）
-        3. 或设置 BMAD_EVO_USE_MOCK=1 环境变量（仅测试，会生成警告日志）
+        WARNING: This method does not generate real AI output. To get real output:
+        1. Use mode='opencode' (recommended)
+        2. Or set BMAD_EVO_USE_MOCK=1 env var (testing only)
         """
         import time
         import os
 
         start_time = time.time()
 
-        # 检查是否显式启用mock模式（仅测试用途）
         if os.environ.get("BMAD_EVO_USE_MOCK") == "1":
             logger.warning(
-                "⚠️  BMAD_EVO_USE_MOCK=1 - Using mock output for testing only!"
+                "BMAD_EVO_USE_MOCK=1 - Using mock output for testing only!"
             )
 
-            # 检查是否有预定义的模拟输出文件
             mock_file = self.project_path / ".bmad" / f"{config.name}-output.txt"
             if mock_file.exists():
                 output = mock_file.read_text(encoding="utf-8")
@@ -448,19 +363,17 @@ class AgentExecutor:
                 return AgentResult(
                     success=True,
                     output=output,
-                    model_used=f"{config.model}(MOCK-FOR-TESTING)",
+                    model_used=f"{config.get_effective_model()}(MOCK-FOR-TESTING)",
                     execution_time=execution_time,
                 )
 
-            # 没有预定义文件时，生成带警告的mock输出
             output = f"""# MOCK OUTPUT - FOR TESTING ONLY
 
-## ⚠️  WARNING
+## WARNING
 This is a MOCK output generated for testing purposes only.
-DO NOT use this in production.
 
 ## Role: {config.description}
-## Model: {config.model}
+## Model: {config.get_effective_model()}
 ## Timestamp: {datetime.now().isoformat()}
 
 ### Prompt Summary (first 200 chars):
@@ -469,12 +382,12 @@ DO NOT use this in production.
 ```
 
 ### To get real AI output:
-1. Use mode='openclaw' with OpenClaw Gateway running
+1. Use mode='opencode' (recommended)
 2. Or implement direct API call in _execute_local()
 3. Or set BMAD_EVO_USE_MOCK=1 for testing (current)
 
 ---
-*This is not real AI output. This is a placeholder for testing.*
+*This is not real AI output.*
 """
 
             execution_time = time.time() - start_time
@@ -482,19 +395,18 @@ DO NOT use this in production.
             return AgentResult(
                 success=True,
                 output=output,
-                model_used=f"{config.model}(MOCK-FOR-TESTING)",
+                model_used=f"{config.get_effective_model()}(MOCK-FOR-TESTING)",
                 execution_time=execution_time,
             )
 
-        # 默认情况：抛出错误，要求使用真实实现
         raise RuntimeError(
             f"Local mode does not have a real AI implementation.\n\n"
             f"Role: {config.name}\n"
-            f"Model: {config.model}\n\n"
+            f"Model: {config.get_effective_model()}\n\n"
             f"To execute this agent, you have 3 options:\n"
-            f"1. Use mode='openclaw' with OpenClaw Gateway running (recommended)\n"
+            f"1. Use mode='opencode' (recommended)\n"
             f"2. Implement direct API call in _execute_local() method\n"
-            f"3. Set BMAD_EVO_USE_MOCK=1 for testing only (will generate warnings)\n\n"
+            f"3. Set BMAD_EVO_USE_MOCK=1 for testing only\n\n"
             f"Current mode: {self.mode}"
         )
 
@@ -520,7 +432,7 @@ def execute_agent(
     project_path: str,
     context: str = "",
     retry_feedback: Optional[str] = None,
-    mode: str = "openclaw",
+    mode: str = "opencode",
 ) -> AgentResult:
     """
     便捷函数：执行单个 Agent
@@ -548,7 +460,7 @@ if __name__ == "__main__":
     parser.add_argument("--project", default=".", help="Project path")
     parser.add_argument("--context", default="", help="Context from previous phase")
     parser.add_argument(
-        "--mode", default="local", choices=["openclaw", "local"], help="Execution mode"
+        "--mode", default="opencode", choices=["opencode", "local"], help="Execution mode"
     )
     parser.add_argument("--list", action="store_true", help="List available agents")
 
@@ -559,7 +471,7 @@ if __name__ == "__main__":
         agents = executor.list_agents()
         print("Available Agents:")
         for name, config in agents.items():
-            print(f"  - {name}: {config.description} (model: {config.model})")
+            print(f"  - {name}: {config.description} (model: {config.get_effective_model()})")
     else:
         result = execute_agent(args.phase, args.project, args.context, mode=args.mode)
         print(json.dumps(asdict(result), indent=2, ensure_ascii=False))

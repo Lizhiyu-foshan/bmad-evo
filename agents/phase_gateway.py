@@ -56,10 +56,6 @@ class PhaseGateway:
     - PASS_THRESHOLD: Minimum score to pass audit (default: 85)
     """
     
-    # Default configuration constants (can be overridden via config file)
-    DEFAULT_MAX_RETRIES = 3
-    DEFAULT_PASS_THRESHOLD = 85
-    
     def __init__(self, project_path: str, config: Optional[Dict[str, Any]] = None):
         self.project_path = Path(project_path)
         self.bmad_dir = self.project_path / ".bmad"
@@ -67,92 +63,27 @@ class PhaseGateway:
         self.checkpoint_dir = self.bmad_dir / "checkpoints"
         self.config_file = self.bmad_dir / "gateway-config.json"
         
-        # Load configuration
+        from config_loader import get_quality_threshold, get_max_retries
         self.config = config or self._load_config()
-        self.MAX_RETRIES = self.config.get('max_retries', self.DEFAULT_MAX_RETRIES)
-        self.PASS_THRESHOLD = self.config.get('pass_threshold', self.DEFAULT_PASS_THRESHOLD)
+        self.MAX_RETRIES = self.config.get('max_retries', get_max_retries("phase_gateway", 3))
+        self.PASS_THRESHOLD = self.config.get('pass_threshold', get_quality_threshold("pass_threshold", 85))
         
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
-        # Phase definitions
         self.phases = [
             "analyst",
             "pm", 
             "architect",
-            "ux",
+            "design",
             "development",
-            "qa",
-            "deployment"
+            "testing",
+            "deployment",
         ]
         
-        self._load_state()
-    
-    def _load_config(self) -> Dict[str, Any]:
-        """Load gateway configuration"""
-        if self.config_file.exists():
-            try:
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning(f"Failed to load config: {e}. Using defaults.")
-        return {}
-    
-    def _load_state(self):
-        """Load phase state from disk with error recovery"""
-        if self.state_file.exists():
-            try:
-                with open(self.state_file, 'r', encoding='utf-8') as f:
-                    self.state = json.load(f)
-                    # Validate state structure
-                    self._validate_state()
-            except (json.JSONDecodeError, IOError) as e:
-                logger.error(f"Corrupted state file: {e}. Creating backup and resetting.")
-                # Backup corrupted state
-                backup_path = self.state_file.with_suffix('.json.corrupt')
-                self.state_file.rename(backup_path)
-                self.state = {
-                    "current_phase": None,
-                    "phase_states": {},
-                    "audit_history": []
-                }
-                self._save_state()
-            except Exception as e:
-                logger.error(f"Unexpected error loading state: {e}")
-                self.state = {
-                    "current_phase": None,
-                    "phase_states": {},
-                    "audit_history": []
-                }
-        else:
-            self.state = {
-                "current_phase": None,
-                "phase_states": {},
-                "audit_history": []
-            }
-    
-    def _validate_state(self):
-        """Validate state structure and fix if needed"""
-        required_keys = ["current_phase", "phase_states", "audit_history"]
-        for key in required_keys:
-            if key not in self.state:
-                self.state[key] = {} if key == "phase_states" else []
-                logger.warning(f"Missing state key '{key}', initialized to default")
-    
-    def _save_state(self):
-        """Save phase state to disk with error handling"""
-        try:
-            # Atomic write: write to temp file first, then rename
-            temp_file = self.state_file.with_suffix('.tmp')
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(self.state, f, ensure_ascii=False, indent=2)
-            temp_file.rename(self.state_file)
-        except IOError as e:
-            logger.error(f"Failed to save state: {e}")
-            # State not saved, but don't crash - will retry on next operation
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error saving state: {e}")
-            raise
+        self.state = self._load_state()
+        
+        logger.info(f"PhaseGateway initialized: {len(self.phases)} phases, "
+                     f"threshold={self.PASS_THRESHOLD}, max_retries={self.MAX_RETRIES}")
     
     def start_phase(self, phase: str) -> bool:
         """
@@ -161,10 +92,9 @@ class PhaseGateway:
         Returns:
             True if phase can start, False otherwise
         """
-        # Check if previous phase passed audit
         prev_phase = self._get_previous_phase(phase)
         if prev_phase and not self._phase_passed(prev_phase):
-            print(f"❌ Cannot start {phase}: previous phase {prev_phase} not passed")
+            print(f"Cannot start {phase}: previous phase {prev_phase} not passed")
             return False
         
         self.state["current_phase"] = phase
@@ -175,7 +105,7 @@ class PhaseGateway:
         }
         self._save_state()
         
-        print(f"✅ Phase '{phase}' started")
+        print(f"Phase '{phase}' started")
         return True
     
     def complete_phase(
@@ -357,6 +287,26 @@ class PhaseGateway:
             "phases": self.state.get("phase_states", {}),
             "can_proceed_to_next": self._can_proceed_to_next()
         }
+    
+    def _load_config(self) -> Dict[str, Any]:
+        if self.config_file.exists():
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {}
+    
+    def _load_state(self) -> Dict[str, Any]:
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, Exception):
+                logger.warning("Corrupted state file, starting fresh")
+        return {"current_phase": None, "phase_states": {}}
+    
+    def _save_state(self):
+        self.bmad_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.state_file, 'w', encoding='utf-8') as f:
+            json.dump(self.state, f, ensure_ascii=False, indent=2)
     
     def _get_previous_phase(self, phase: str) -> Optional[str]:
         """Get the phase before current one"""
