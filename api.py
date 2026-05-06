@@ -137,24 +137,16 @@ def pipeline(
         )
 
         pipeline_data = result.get("pipeline_output", {})
-        role_outputs = result.get("role_outputs", {})
-
-        analysis = {
-            "summary": pipeline_data.get("task", task_str),
-            "status": pipeline_data.get("status", "unknown"),
-            "findings": pipeline_data.get("findings", []),
-            "role_outputs": role_outputs,
-        }
-
-        metadata = pipeline_data.get("metadata", {})
-        metadata["collected_data"] = result.get("collected_data", {})
 
         po = PipelineOutput(
-            analysis=analysis,
-            metadata=metadata,
             status=pipeline_data.get("status", "unknown"),
+            summary=pipeline_data.get("summary", ""),
+            metadata=pipeline_data.get("metadata", {}),
+            findings=pipeline_data.get("findings", []),
+            output_files=pipeline_data.get("outputs", {}),
+            output_dir=pipeline_data.get("output_dir"),
         )
-        po.json_str = po.to_json()
+        po.json_str = po.get_metadata_json()
 
         return po
     except Exception as e:

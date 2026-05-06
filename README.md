@@ -1,4 +1,4 @@
-# BMAD-EVO v4.0
+# BMAD-EVO v4.1
 
 **多Agent深度分析框架** — 支持三种集成模式
 
@@ -94,23 +94,45 @@ python -m bmad_evo analyze "..." --pass-threshold 90 # 审计阈值
 
 ## Pipeline 集成
 
-当作为 Pipeline 节点使用时，BMAD-EVO 输出标准化的 JSON：
+当作为 Pipeline 节点使用时，BMAD-EVO 采用 **JSON + Markdown 分离**设计：
+
+```
+pipeline_output/
+├── pipeline_result.json       ← 结构化元数据（几KB）
+├── full_report.md             ← 完整分析报告（几万字）
+└── roles/                     ← 各角色独立输出
+    ├── 01_geopolitical_analyst.md
+    ├── 02_energy_economist.md
+    └── 03_risk_manager.md
+```
+
+**JSON 存元数据，Markdown 存内容，文件路径做桥梁。**
 
 ```python
 from api import pipeline
 
 result = pipeline(task="评估半导体供应链风险")
 
-# 输出结构
-result.analysis     # {"summary": "...", "findings": [...], "role_outputs": {...}}
-result.json_str     # 完整 JSON 字符串
-result.metadata     # {"complexity": 8, "status": "success", "needs_data_collection": true}
-result.status       # "success" | "partial" | "failed"
+# 元数据（JSON，轻量）
+result.summary          # str: 执行摘要
+result.status           # "success" | "partial" | "failed"
+result.metadata         # {"complexity": 8, "total_roles": 7, ...}
+result.findings         # [{"role": "...", "key_points": [...], "output_file": "roles/01_xxx.md"}]
+result.json_str         # 完整元数据 JSON 字符串
+
+# 内容文件（Markdown，按需读取）
+result.output_dir       # str: 输出目录路径
+result.output_files     # {"full_report": "full_report.md", "role_outputs": {...}}
 ```
+
+下游系统工作流：
+1. 读 `pipeline_result.json` → 获取 summary、status、metadata
+2. 按需读 `full_report.md` 或单个 role 的 md 文件
+3. 不需要一次性加载所有内容到内存
 
 Pipeline 模式特点：
 - **非交互** — 跳过所有用户确认步骤
-- **JSON 输出** — 结构化数据供下游系统消费
+- **JSON + Markdown 分离** — 元数据机器友好，内容人类友好
 - **确定性** — 相同任务产生相同结构的输出
 
 ## 返回类型
@@ -126,11 +148,14 @@ report.role_outputs    # dict: {role_name: output}
 report.collected_data  # dict: {role_name: collected_text}
 report.success         # bool
 
-# PipelineOutput
-result.analysis        # dict: 结构化分析结果
-result.json_str        # str: JSON 字符串
-result.metadata        # dict: 元数据
+# PipelineOutput (v4.1: JSON元数据 + Markdown文件分离)
+result.summary         # str: 执行摘要
 result.status          # str: "success" | "partial" | "failed"
+result.metadata        # dict: 复杂度、角色数等元数据
+result.findings        # list: [{role, title, key_points, output_file}]
+result.output_files    # dict: {"full_report": "...", "role_outputs": {...}}
+result.output_dir      # Optional[str]: 输出目录路径
+result.json_str        # str: 元数据 JSON 字符串
 
 # BuildResult
 result.analysis        # str: 分析文档
@@ -229,6 +254,7 @@ python -m pytest tests/ -v
 
 ## 版本历史
 
+- **v4.1** (2026-05-06): Pipeline 输出重构 — JSON元数据 + Markdown文件分离，避免大内容塞入JSON
 - **v4.0** (2026-05-06): 三种集成模式 API + CLI + OpenCode Skill + 思考链引擎 + 增量数据采集
 - **v3.1** (2026-04-06): GLM模型体系 + 上下文预算 + 交互式确认
 - **v3.0** (2026-03-21): 全动态智能生成系统

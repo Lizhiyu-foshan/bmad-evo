@@ -1379,20 +1379,113 @@ class WorkflowOrchestratorV3Final:
     def _build_pipeline_output(
         self, task_description: str, all_passed: bool, role_outputs: Dict[str, str]
     ) -> Dict[str, Any]:
-        summary_parts = []
-        for rn, output in role_outputs.items():
-            summary_parts.append({"role": rn, "summary": output[:500]})
+        output_dir = self.project_path / "pipeline_output"
+        roles_dir = output_dir / "roles"
+        roles_dir.mkdir(parents=True, exist_ok=True)
 
-        return {
+        full_report_parts = []
+        findings = []
+        role_file_map = {}
+
+        for i, (rn, output) in enumerate(role_outputs.items(), 1):
+            role = self._get_role_by_name(rn)
+            title = role.title if role else rn
+            safe_name = f"{i:02d}_{rn}"
+            md_path = roles_dir / f"{safe_name}.md"
+            md_path.write_text(output, encoding="utf-8")
+            rel_path = f"roles/{safe_name}.md"
+            role_file_map[rn] = rel_path
+
+            key_points = self._extract_key_points(output, max_points=3)
+            findings.append({
+                "role": rn,
+                "title": title,
+                "key_points": key_points,
+                "output_file": rel_path,
+            })
+
+            full_report_parts.append(f"## {title}\n\n{output}")
+
+        full_report = "\n\n---\n\n".join(full_report_parts)
+        report_path = output_dir / "full_report.md"
+        report_path.write_text(full_report, encoding="utf-8")
+
+        collected_summary = {}
+        if self.thinking_chain_executor:
+            tc = self.thinking_chain_executor
+            sources = set()
+            for spec in tc.state.data_collection_specs.values():
+                sources.update(spec.sources)
+            collected_summary = {
+                "sources_accessed": list(sources),
+                "queries_total": sum(
+                    len(s.queries) for s in tc.state.data_collection_specs.values()
+                ),
+            }
+
+        avg_audit = 0
+        scores = [r.get("audit_score") for r in self.phase_results.values() if r.get("audit_score")]
+        if scores:
+            avg_audit = sum(scores) / len(scores)
+
+        summary = task_description[:200]
+
+        pipeline_data = {
             "task": task_description,
             "status": "success" if all_passed else "partial",
-            "findings": summary_parts,
+            "summary": summary,
             "metadata": {
                 "complexity": self.task_analysis.complexity_score if self.task_analysis else 0,
                 "task_type": self.task_analysis.task_type if self.task_analysis else "unknown",
+                "total_roles": len(role_outputs),
+                "completed_roles": sum(1 for r in self.phase_results.values() if r.get("passed")),
                 "needs_data_collection": self.task_analysis.needs_data_collection if self.task_analysis else False,
+                "analysis_mode": self.task_analysis.analysis_mode if self.task_analysis else "unknown",
+                "avg_audit_score": round(avg_audit, 1),
             },
+            "findings": findings,
+            "outputs": {
+                "full_report": "full_report.md",
+                "role_outputs": role_file_map,
+            },
+            "collected_data_summary": collected_summary,
+            "output_dir": str(output_dir),
         }
+
+        import json
+        json_path = output_dir / "pipeline_result.json"
+        json_path.write_text(
+            json.dumps(pipeline_data, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+
+        if self.mode == "pipeline":
+            print(f"\n   Pipeline output saved to: {output_dir}")
+            print(f"   JSON metadata: pipeline_result.json")
+            print(f"   Full report: full_report.md")
+            print(f"   Role outputs: {len(role_file_map)} files in roles/")
+
+        return pipeline_data
+
+    def _extract_key_points(self, text: str, max_points: int = 3) -> List[str]:
+        points = []
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                point = stripped[2:].strip()
+                if len(point) > 10 and len(point) < 200:
+                    points.append(point)
+                if len(points) >= max_points:
+                    break
+        if not points:
+            sentences = text.replace("\n", " ").split("。")
+            for s in sentences:
+                s = s.strip()
+                if len(s) > 10 and len(s) < 200:
+                    points.append(s)
+                if len(points) >= max_points:
+                    break
+        return points
 
     def _generate_markdown_report(self, task_description: str, all_passed: bool) -> str:
         lines = [

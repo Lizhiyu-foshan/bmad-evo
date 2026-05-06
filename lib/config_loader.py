@@ -134,7 +134,7 @@ DEFAULTS: Dict[str, Any] = {
         "resilient_executor": 600,
         "opencode_adapter": 120,
     },
-    "version": "4.0.0",
+    "version": "4.1.0",
     "config_schema_version": 1,
 }
 

@@ -60,15 +60,21 @@ def cmd_pipeline(args):
         config=_load_config(args),
     )
 
-    output_str = result.json_str if result.json_str else json.dumps(
-        result.to_dict(), indent=2, ensure_ascii=False, default=str
-    )
-
-    if args.output_file:
-        Path(args.output_file).write_text(output_str, encoding="utf-8")
-        print(f"Pipeline output saved to: {args.output_file}")
+    if result.output_dir:
+        print(f"\nPipeline output directory: {result.output_dir}")
+        print(f"  JSON metadata: pipeline_result.json")
+        print(f"  Full report:   full_report.md")
+        if result.output_files.get("role_outputs"):
+            print(f"  Role outputs:  {len(result.output_files['role_outputs'])} files in roles/")
+        if args.output_file:
+            meta_path = Path(result.output_dir) / "pipeline_result.json"
+            import shutil
+            shutil.copy2(meta_path, args.output_file)
+            print(f"  JSON copied to: {args.output_file}")
     else:
-        print(output_str)
+        print(result.json_str if result.json_str else json.dumps(
+            result.to_dict(), indent=2, ensure_ascii=False, default=str
+        ))
 
     sys.exit(0 if result.status == "success" else 1)
 

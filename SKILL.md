@@ -1,9 +1,9 @@
 ---
 name: bmad-evo
-description: BMAD-EVO v4.0 多Agent深度分析框架。三种集成模式: analyze(报告) / pipeline(JSON) / build(编码)。支持思考链引擎、增量数据采集、双向反馈、自我反思。所有参数通过 config/bmad.json 配置。
+description: BMAD-EVO v4.1 多Agent深度分析框架。三种集成模式: analyze(报告) / pipeline(JSON+MD) / build(编码)。Pipeline模式输出JSON元数据+Markdown文件分离。
 ---
 
-# BMAD-EVO v4.0
+# BMAD-EVO v4.1
 
 **多Agent深度分析框架** — 三种集成模式 + 思考链引擎 + 全动态角色生成
 
@@ -39,7 +39,7 @@ python -m bmad_evo build "开发XXX" --lang python --output ./project
 约束审计(≥85分) → 按模式输出
 ```
 
-## v4.0 功能
+## v4.1 功能
 
 | 功能 | 说明 |
 |------|------|
